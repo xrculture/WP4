@@ -1,0 +1,12 @@
+using UIKit;
+
+namespace ARGuidanceMAUI;
+
+public class Program
+{
+    // Main entry point of the application.
+    static void Main(string[] args)
+    {
+        UIApplication.Main(args, null, typeof(AppDelegate));
+    }
+}
