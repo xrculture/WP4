@@ -58,7 +58,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
     private List<float> _yaws = new();
     private bool _capturing = false;
     private int _captures = 0;
-    private const float MinPointConfidence = 0.2f;
+    private const float MinPointConfidence = 0.1f;
 
     private CameraDevice? _cameraDevice;
     private ImageReader? _imageReader;
@@ -1109,6 +1109,8 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 config.SetUpdateMode(Config.UpdateMode.LatestCameraImage);
                 config.SetFocusMode(Config.FocusMode.Auto);
                 config.SetPlaneFindingMode(Config.PlaneFindingMode.HorizontalAndVertical);
+                config.SetDepthMode(Config.DepthMode.Automatic);
+                config.SetLightEstimationMode(Config.LightEstimationMode.EnvironmentalHdr);
                 _session?.Configure(config);
 
                 StartBackgroundThread();
