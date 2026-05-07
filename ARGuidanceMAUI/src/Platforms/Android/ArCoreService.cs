@@ -57,6 +57,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
     private List<Pose> _poses = new();
     private List<float> _yaws = new();
     private bool _capturing = false;
+    private bool _readyToCapture = false;
     private int _captures = 0;
     private const float MinPointConfidence = 0.1f;
 
@@ -1000,11 +1001,8 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
     private void ResetDataStructures()
     {
-        // Reset project info
         CurrentProjectName = string.Empty;
         CurrentProjectFolder = string.Empty;
-
-        // Reset all AR tracking data
         _accumCentroid = new float[3];
         _centroidCount = 0;
         _currentPose = null;
@@ -1013,6 +1011,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         _poses = new();
         _yaws = new();
         _capturing = false;
+        _readyToCapture = false;
         _captures = 0;
     }
 
@@ -1636,23 +1635,31 @@ void main() {
         {
             using (var image = reader?.AcquireLatestImage())
             {
-                if (image != null)
-                {
-                    var buffer = image.GetPlanes()?[0].Buffer;
-                    if (buffer != null)
-                    {
-                        byte[] jpegBytes = new byte[buffer.Remaining()];
-                        buffer.Get(jpegBytes);
+                if (image == null) return;
 
-                        CaptureReady?.Invoke(new CapturePackage
-                        {
-                            JpegBytes = jpegBytes,
-                            MetadataJson = "",
-                            FileBaseName = $"cap_{image.Timestamp}"
-                        });
-                    }
+                if (!_readyToCapture)
+                {
+                    // This is an AF-phase frame — discard it
                     image.Close();
+                    return;
                 }
+
+                _readyToCapture = false;
+
+                var buffer = image.GetPlanes()?[0].Buffer;
+                if (buffer != null)
+                {
+                    byte[] jpegBytes = new byte[buffer.Remaining()];
+                    buffer.Get(jpegBytes);
+
+                    CaptureReady?.Invoke(new CapturePackage
+                    {
+                        JpegBytes = jpegBytes,
+                        MetadataJson = "",
+                        FileBaseName = $"cap_{image.Timestamp}"
+                    });
+                }
+                image.Close();
             }
 
             _poses.Add(_currentPose!);
@@ -1745,6 +1752,135 @@ void main() {
         public void OnImageAvailable(ImageReader? reader) => _onImageAvailable(reader);
     }
 
+    // CameraCaptureSession.StateCallback implementation
+    private class CaptureSessionCallback : CameraCaptureSession.StateCallback
+    {
+        private readonly ArCoreService _service;
+        public CaptureSessionCallback(ArCoreService service) => _service = service;
+
+        public override void OnConfigured(CameraCaptureSession session)
+        {
+            try
+            {
+                // Start a repeating request with AF trigger to lock focus
+                var previewRequest = _service._cameraDevice!.CreateCaptureRequest(CameraTemplate.StillCapture);
+                previewRequest.AddTarget(_service._imageReader!.Surface!);
+                previewRequest.Set(CaptureRequest.ControlAfMode!, (int)ControlAFMode.Auto);
+                previewRequest.Set(CaptureRequest.ControlAfTrigger!, (int)ControlAFTrigger.Start);
+                previewRequest.Set(CaptureRequest.ControlAeMode!, (int)ControlAEMode.On);
+                previewRequest.Set(CaptureRequest.ControlAwbMode!, (int)ControlAwbMode.Auto);
+                previewRequest.Set(CaptureRequest.ControlMode!, (int)ControlMode.Auto);
+
+                session.Capture(
+                    previewRequest.Build(),
+                    new WaitForAfCallback(_service, session),
+                    _service._backgroundHandler
+                );
+            }
+            catch (Exception ex)
+            {
+                _service.InfoMessage?.Invoke($"Camera session error: {ex.Message}");
+                _service._capturing = false;
+            }
+        }
+
+        public override void OnConfigureFailed(CameraCaptureSession session)
+        {
+            _service._capturing = false;
+        }
+    }
+
+    // Waits for AF to lock, then fires the actual still capture
+    private class WaitForAfCallback : CameraCaptureSession.CaptureCallback
+    {
+        private readonly ArCoreService _service;
+        private readonly CameraCaptureSession _session;
+        private int _attempts = 0;
+        private const int MaxAttempts = 10;
+
+        public WaitForAfCallback(ArCoreService service, CameraCaptureSession session)
+        {
+            _service = service;
+            _session = session;
+        }
+
+        public override void OnCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result)
+        {
+            base.OnCaptureCompleted(session, request, result);
+
+            var afState = result.Get(CaptureResult.ControlAfState);
+            _attempts++;
+
+            bool afLocked = afState != null &&
+                ((ControlAFState)(int)(Java.Lang.Integer)afState == ControlAFState.FocusedLocked ||
+                 (ControlAFState)(int)(Java.Lang.Integer)afState == ControlAFState.NotFocusedLocked);
+
+            if (afLocked || _attempts >= MaxAttempts)
+            {
+                if (_attempts < MaxAttempts)
+                    _service.InfoMessage?.Invoke("AF locked. Capturing...");
+                else
+                    _service.InfoMessage?.Invoke("AF timeout. Capturing anyway...");
+
+                FireStillCapture();
+            }
+            else
+            {
+                // Re-trigger AF check
+                try
+                {
+                    var triggerRequest = _service._cameraDevice!.CreateCaptureRequest(CameraTemplate.StillCapture);
+                    triggerRequest.AddTarget(_service._imageReader!.Surface!);
+                    triggerRequest.Set(CaptureRequest.ControlAfMode!, (int)ControlAFMode.Auto);
+                    triggerRequest.Set(CaptureRequest.ControlAfTrigger!, (int)ControlAFTrigger.Idle);
+                    triggerRequest.Set(CaptureRequest.ControlAeMode!, (int)ControlAEMode.On);
+                    triggerRequest.Set(CaptureRequest.ControlMode!, (int)ControlMode.Auto);
+                    _session.Capture(triggerRequest.Build(), this, _service._backgroundHandler);
+                }
+                catch (Exception ex)
+                {
+                    _service.InfoMessage?.Invoke($"AF retry error: {ex.Message}");
+                    FireStillCapture();
+                }
+            }
+        }
+
+        private void FireStillCapture()
+        {
+            try
+            {
+                var stillRequest = _service._cameraDevice!.CreateCaptureRequest(CameraTemplate.StillCapture);
+                stillRequest.AddTarget(_service._imageReader!.Surface!);
+                stillRequest.Set(CaptureRequest.ControlAfMode!, (int)ControlAFMode.Auto);
+                stillRequest.Set(CaptureRequest.ControlAeMode!, (int)ControlAEMode.On);
+                stillRequest.Set(CaptureRequest.ControlAwbMode!, (int)ControlAwbMode.Auto);
+                stillRequest.Set(CaptureRequest.ControlMode!, (int)ControlMode.Auto);
+                stillRequest.Set(CaptureRequest.ControlCaptureIntent!, (int)ControlCaptureIntent.StillCapture);
+                stillRequest.Set(CaptureRequest.JpegQuality!, (sbyte)100);
+                stillRequest.Set(CaptureRequest.JpegOrientation!, 90);
+                stillRequest.Set(CaptureRequest.NoiseReductionMode!, (int)NoiseReductionMode.HighQuality);
+                stillRequest.Set(CaptureRequest.EdgeMode!, (int)EdgeMode.HighQuality);
+                stillRequest.Set(CaptureRequest.ColorCorrectionMode!, (int)ColorCorrectionMode.HighQuality);
+                stillRequest.Set(CaptureRequest.ControlVideoStabilizationMode!, (int)ControlVideoStabilizationMode.Off);
+
+                // Signal that the next image is the real still capture
+                _service._readyToCapture = true;
+
+                _session.Capture(
+                    stillRequest.Build(),
+                    new CameraCaptureCallbackImpl(() =>
+                        _service.InfoMessage?.Invoke("High-quality capture completed.")),
+                    _service._backgroundHandler
+                );
+            }
+            catch (Exception ex)
+            {
+                _service.InfoMessage?.Invoke($"Still capture error: {ex.Message}");
+                _service._capturing = false;
+            }
+        }
+    }
+
     // CameraCaptureSession.CaptureCallback implementation
     private class CameraCaptureCallbackImpl : CameraCaptureSession.CaptureCallback
     {
@@ -1754,44 +1890,6 @@ void main() {
         {
             base.OnCaptureCompleted(session, request, result);
             _onCaptureCompleted();
-        }
-    }
-
-    // CameraCaptureSession.StateCallback implementation
-    private class CaptureSessionCallback : CameraCaptureSession.StateCallback
-    {
-        private readonly ArCoreService _service;
-        public CaptureSessionCallback(ArCoreService service) => _service = service;
-
-        public override void OnConfigured(CameraCaptureSession session)
-        {
-            var buildRequest = _service._cameraDevice!.CreateCaptureRequest(CameraTemplate.StillCapture);
-            buildRequest.AddTarget(_service._imageReader!.Surface!);
-
-            // Enhanced settings for best capture quality
-            buildRequest.Set(CaptureRequest.ControlAfMode!, (int)ControlAFMode.ContinuousPicture);
-            buildRequest.Set(CaptureRequest.ControlAeMode!, (int)ControlAEMode.On);
-            buildRequest.Set(CaptureRequest.ControlAwbMode!, (int)ControlAwbMode.Auto);
-            buildRequest.Set(CaptureRequest.ControlMode!, (int)ControlMode.Auto);
-            buildRequest.Set(CaptureRequest.ControlCaptureIntent!, (int)ControlCaptureIntent.StillCapture);
-            buildRequest.Set(CaptureRequest.JpegQuality!, (sbyte)100); // Maximum JPEG quality
-            buildRequest.Set(CaptureRequest.JpegOrientation!, 90);
-            buildRequest.Set(CaptureRequest.NoiseReductionMode!, (int)NoiseReductionMode.HighQuality);
-            buildRequest.Set(CaptureRequest.EdgeMode!, (int)EdgeMode.HighQuality);
-            buildRequest.Set(CaptureRequest.ColorCorrectionMode!, (int)ColorCorrectionMode.HighQuality);
-            buildRequest.Set(CaptureRequest.ControlVideoStabilizationMode!, (int)ControlVideoStabilizationMode.Off);
-
-            session.Capture(buildRequest.Build(),
-                new CameraCaptureCallbackImpl(() =>
-                {
-                    _service.InfoMessage?.Invoke("High-quality capture completed.");
-                }),
-                _service._backgroundHandler
-            );
-        }
-
-        public override void OnConfigureFailed(CameraCaptureSession session)
-        {
         }
     }
 
