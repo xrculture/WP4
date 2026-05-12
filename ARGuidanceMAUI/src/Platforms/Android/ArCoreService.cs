@@ -1707,6 +1707,36 @@ void main() {
         }
     }
 
+    private int GetJpegOrientation()
+    {
+        try
+        {
+            var cameraManager = _ctx.GetSystemService(Context.CameraService) as CameraManager;
+            var cameraId = cameraManager?.GetCameraIdList().First();
+            if (cameraId == null) return 90;
+
+            var characteristics = cameraManager!.GetCameraCharacteristics(cameraId);
+            var sensorOrientation = (int)(characteristics.Get(CameraCharacteristics.SensorOrientation) as Java.Lang.Integer)!;
+
+            var displayRotation = GetDisplayRotation();
+            int deviceDegrees = displayRotation switch
+            {
+                SurfaceOrientation.Rotation0 => 0,
+                SurfaceOrientation.Rotation90 => 90,
+                SurfaceOrientation.Rotation180 => 180,
+                SurfaceOrientation.Rotation270 => 270,
+                _ => 0
+            };
+
+            // For back-facing camera
+            return (sensorOrientation - deviceDegrees + 360) % 360;
+        }
+        catch
+        {
+            return 90; // fallback
+        }
+    }
+
     // CameraDevice.StateCallback implementation
     private class CameraStateCallback : CameraDevice.StateCallback
     {
@@ -1843,7 +1873,7 @@ void main() {
                     FireStillCapture();
                 }
             }
-        }
+        }        
 
         private void FireStillCapture()
         {
@@ -1857,7 +1887,7 @@ void main() {
                 stillRequest.Set(CaptureRequest.ControlMode!, (int)ControlMode.Auto);
                 stillRequest.Set(CaptureRequest.ControlCaptureIntent!, (int)ControlCaptureIntent.StillCapture);
                 stillRequest.Set(CaptureRequest.JpegQuality!, (sbyte)100);
-                stillRequest.Set(CaptureRequest.JpegOrientation!, 90);
+                stillRequest.Set(CaptureRequest.JpegOrientation!, _service.GetJpegOrientation());
                 stillRequest.Set(CaptureRequest.NoiseReductionMode!, (int)NoiseReductionMode.HighQuality);
                 stillRequest.Set(CaptureRequest.EdgeMode!, (int)EdgeMode.HighQuality);
                 stillRequest.Set(CaptureRequest.ColorCorrectionMode!, (int)ColorCorrectionMode.HighQuality);
