@@ -111,7 +111,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         {
             try
             {
-                var actions = new List<string>() { "New Project", "Share Log" };
+                var actions = new List<string>() { "New Project", "Projects", "Share Log" };
                 var action = await Application.Current.MainPage.DisplayActionSheetAsync(
                     $"Options",
                     "Cancel",
@@ -123,6 +123,10 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 {
                     ResetDataStructures();
                     CreateNewProject();
+                }
+                else if (action == "Projects")
+                {
+                    await ShowProjectsUI();
                 }
                 else if (action == "Share Log")
                 {
@@ -139,50 +143,47 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         return Task.CompletedTask;
     }
 
-    public void Projects()
+    public async Task ShowProjectsUI()
     {
-        MainThread.BeginInvokeOnMainThread(async () =>
+        try
         {
-            try
+            var projects = await GetAllProjectsAsync();
+
+            if (projects.Count == 0)
             {
-                var projects = await GetAllProjectsAsync();
+                _logger.Information("No projects found.");
+                InfoMessage?.Invoke("No projects found.");
+                return;
+            }
 
-                if (projects.Count == 0)
+            // Show project list to user
+            var projectNames = projects.Select(p => $"{p.Name} - {p.Timestamp:yyyy-MM-dd HH:mm}").ToArray();
+
+            if (Application.Current?.MainPage != null)
+            {
+                var selectedProject = await Application.Current.MainPage.DisplayActionSheetAsync(
+                    "Select Project",
+                    "Cancel",
+                    null,
+                    projectNames
+                );
+
+                if (selectedProject != null && selectedProject != "Cancel")
                 {
-                    _logger.Information("No projects found.");
-                    InfoMessage?.Invoke("No projects found.");
-                    return;
-                }
-
-                // Show project list to user
-                var projectNames = projects.Select(p => $"{p.Name} - {p.Timestamp:yyyy-MM-dd HH:mm}").ToArray();
-
-                if (Application.Current?.MainPage != null)
-                {
-                    var selectedProject = await Application.Current.MainPage.DisplayActionSheetAsync(
-                        "Select Project",
-                        "Cancel",
-                        null,
-                        projectNames
-                    );
-
-                    if (selectedProject != null && selectedProject != "Cancel")
+                    // Find the selected project
+                    var index = Array.IndexOf(projectNames, selectedProject);
+                    if (index >= 0 && index < projects.Count)
                     {
-                        // Find the selected project
-                        var index = Array.IndexOf(projectNames, selectedProject);
-                        if (index >= 0 && index < projects.Count)
-                        {
-                            await ShowProjectStatusAsync(projects[index]);
-                        }
+                        await ShowProjectStatusAsync(projects[index]);
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "Error loading projects.");
-                InfoMessage?.Invoke($"Error loading projects: {ex.Message}");
-            }
-        });
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error loading projects.");
+            InfoMessage?.Invoke($"Error loading projects: {ex.Message}");
+        }
     }
 
     public async Task ShareLogAsync()

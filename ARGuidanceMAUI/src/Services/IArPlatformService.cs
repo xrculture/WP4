@@ -12,6 +12,5 @@ public interface IArPlatformService
     void Stop();
     void RequestCapture();
     Task Options();
-    void Projects();
     string CurrentProjectFolder { get; }
 }

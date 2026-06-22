@@ -82,11 +82,6 @@ public class ArKitService : NSObject, IArPlatformService, IARSessionDelegate
         return Task.CompletedTask;
     }
 
-    public void Projects()
-    {
-        // Implementation for managing projects
-    }
-
     private void CreateNewProject()
     {
         var now = DateTime.Now;

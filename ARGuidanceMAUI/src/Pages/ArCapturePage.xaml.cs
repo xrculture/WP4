@@ -68,7 +68,7 @@ public class ArCapturePage : ContentPage
         };
 
         var capture = new Button { 
-            Text = "Capture",
+            Text = "📷",
             FontAutoScalingEnabled = false
         };
         capture.Clicked += (_, __) => _ar.RequestCapture();
@@ -78,12 +78,6 @@ public class ArCapturePage : ContentPage
             FontAutoScalingEnabled = false
         };
         options.Clicked += OnOptionsClicked;
-
-        var projects = new Button { 
-            Text = "Projects",
-            FontAutoScalingEnabled = false
-        };
-        projects.Clicked += OnProjectsClicked;
 
         _ar.GuidanceUpdated += s =>
         {
@@ -121,14 +115,13 @@ public class ArCapturePage : ContentPage
         {
             Orientation = StackOrientation.Horizontal,
             Spacing = 12,
-            Children = { options, projects, capture }
+            Children = { options, capture }
         };
 
         overlay.Children.Add(buttonRow);
         Grid.SetRow(buttonRow, 2);
 
         options.HorizontalOptions = LayoutOptions.Start;
-        projects.HorizontalOptions = LayoutOptions.Center;
         capture.HorizontalOptions = LayoutOptions.End;
         buttonRow.Margin = new Thickness(12);
 
@@ -229,18 +222,6 @@ public class ArCapturePage : ContentPage
         catch (Exception ex)
         {
             await DisplayAlert("Error", $"Failed to open options: {ex.Message}", "OK");
-        }
-    }
-
-    private async void OnProjectsClicked(object? sender, EventArgs e)
-    {
-        try
-        {
-            _ar.Projects();
-        }
-        catch (Exception ex)
-        {
-            await DisplayAlert("Error", $"Failed open Project UI: {ex.Message}", "OK");
         }
     }
 }
