@@ -3,8 +3,8 @@
   <PropertyGroup>
     <IsFirstTimeProjectOpen>False</IsFirstTimeProjectOpen>
     <ActiveDebugFramework>net10.0-android</ActiveDebugFramework>
-    <ActiveDebugProfile>Samsung SM-G960F (Android 10.0 - API 29)</ActiveDebugProfile>
-    <SelectedPlatformGroup>PhysicalDevice</SelectedPlatformGroup>
-    <DefaultDevice>pixel_tablet_-_api_35</DefaultDevice>
+    <ActiveDebugProfile>Pixel 7 - API 36.0 (Android 16.0 - API 36)</ActiveDebugProfile>
+    <SelectedPlatformGroup>Emulator</SelectedPlatformGroup>
+    <DefaultDevice>pixel_7_-_api_36_0</DefaultDevice>
   </PropertyGroup>
 </Project>

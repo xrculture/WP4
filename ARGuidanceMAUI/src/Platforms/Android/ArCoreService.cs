@@ -6,6 +6,7 @@ using Android.Media;
 using Android.Opengl;
 using Android.OS;
 using Android.Provider;
+using Android.Runtime;
 using Android.Views;
 using ARGuidanceMAUI.Models;
 using ARGuidanceMAUI.Services;
@@ -13,7 +14,9 @@ using Google.AR.Core;
 using Google.AR.Core.Exceptions;
 using Java.Nio;
 using Javax.Microedition.Khronos.Opengles; // OpenGL ES + EGL types (for IGL10, EGLConfig)
+using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
+using Serilog;
 using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Text;
@@ -77,11 +80,14 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
     // Server configuration
     private string _3DReconstructionServerUrl;
 
+    // Logger
+    private readonly Serilog.ILogger _logger;
+
     public ArCoreService()
     {
         _ctx = global::Android.App.Application.Context!;
-        _3DReconstructionServerUrl = "http://xrculture.rdf.bg:30026/";
-        //_3DReconstructionServerUrl = "http://192.168.1.20:5260/"; // localhost
+        _logger = Log.Logger.ForContext<ArCoreService>();
+        _3DReconstructionServerUrl = "http://xrculture.rdf.bg:30026/";        
         DetectCameraCapabilities();
     }
 
@@ -142,6 +148,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             }
             catch (Exception ex)
             {
+                _logger.Error(ex, "Error loading projects.");
                 InfoMessage?.Invoke($"Error loading projects: {ex.Message}");
             }
         });
@@ -207,6 +214,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         }
         catch (Exception ex)
         {
+            _logger.Error(ex, "Error retrieving projects.");
             InfoMessage?.Invoke($"Error retrieving projects: {ex.Message}");
         }
 
@@ -256,6 +264,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         }
         catch (Exception ex)
         {
+            _logger.Error(ex, "Error reading project XML.");
             InfoMessage?.Invoke($"Error reading project XML: {ex.Message}");
             return null;
         }
@@ -448,7 +457,8 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             }
             catch (Exception ex)
             {
-                InfoMessage?.Invoke($"Error creating zip file: {ex.Message}");
+                _logger.Error(ex, "Error creating zip file.");
+                InfoMessage?.Invoke($"Error creating zip file: {ex.Message}");                
             }
             finally
             {
@@ -461,6 +471,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                     }
                     catch (Exception ex)
                     {
+                        _logger.Error(ex, "Error deleting temporary zip file.");
                         InfoMessage?.Invoke($"Error deleting temp zip file: {ex.Message}");
                     }
                 }
@@ -468,6 +479,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         }
         catch (Exception ex)
         {
+            _logger.Error(ex, "Error creating 3D model.");
             InfoMessage?.Invoke($"Error creating 3D model: {ex.Message}");
         }
         finally
@@ -564,6 +576,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         }
         catch (Exception ex)
         {
+            _logger.Error(ex, "Failed to create 3D model.");
             await ShowMessageAsync("Error", $"Failed to create 3D model: '{ex.Message}'.");
         }
 
@@ -587,6 +600,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             }
             catch
             {
+                _logger.Warning("Failed to show message dialog. Falling back to InfoMessage event.");
                 InfoMessage?.Invoke($"{title}: {message}");
                 System.Diagnostics.Debug.WriteLine($"{title}: {message}");
             }
@@ -607,6 +621,8 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             }
             catch (HttpRequestException ex)
             {
+                _logger.Warning(ex, $"HTTP request failed on attempt {retryCount + 1}. Retrying...");
+
                 retryCount++;
                 if (retryCount >= maxRetries)
                     throw;
@@ -668,6 +684,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         }
         catch (Exception ex)
         {
+            _logger.Error(ex, "Error querying images.");
             InfoMessage?.Invoke($"Error querying images: {ex.Message}");
         }
 
@@ -739,6 +756,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                     }
                     catch (XmlException)
                     {
+                        _logger.Error("Unable to parse response as JSON or XML. Response: {Response}", responseString);
                         await ShowMessageAsync("Error", "Unable to parse response as JSON or XML.");
                     }
                 }
@@ -746,6 +764,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         }
         catch (Exception ex)
         {
+            _logger.Error(ex, "Error checking model status.");
             await ShowMessageAsync("Error", $"Error checking status: {ex.Message}");
         }
     }
@@ -801,6 +820,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                     // Save XML file
                     await SaveProjectXmlAsync(CurrentProjectFolder, sbProjectXML.ToString());
 
+                    _logger.Information("Project created: {ProjectName} at {FolderPath}", result.Name, CurrentProjectFolder);
                     InfoMessage?.Invoke($"Project created: {result.Name}");
                 }
                 else
@@ -810,6 +830,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             }
             catch (Exception ex)
             {
+                _logger.Error(ex, "Error creating project.");
                 InfoMessage?.Invoke($"Error creating project: {ex.Message}");
             }
         });
@@ -858,6 +879,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             var context = global::Android.App.Application.Context;
             if (context?.ContentResolver == null)
             {
+                _logger.Error("Content resolver not available.");
                 InfoMessage?.Invoke("Content resolver not available.");
                 return;
             }
@@ -871,6 +893,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             {
                 // File exists - update it
                 uri = existingUri;
+                _logger.Information("Updating existing project XML at: {RelativePath}", relativePath);
                 InfoMessage?.Invoke($"Updating existing project XML at: {relativePath}");
             }
             else
@@ -884,9 +907,11 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 uri = context.ContentResolver.Insert(MediaStore.Files.GetContentUri("external"), values);
                 if (uri == null)
                 {
+                    _logger.Error("Failed to create XML file via MediaStore at: {RelativePath}", relativePath);
                     InfoMessage?.Invoke("Failed to create XML file via MediaStore.");
                     return;
                 }
+                _logger.Information("Creating new project XML at: {RelativePath}", relativePath);
                 InfoMessage?.Invoke($"Creating new project XML at: {relativePath}");
             }
 
@@ -902,10 +927,12 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 }
             });
 
+            _logger.Information("Project XML saved successfully at: {RelativePath}", relativePath);
             InfoMessage?.Invoke($"Project XML saved successfully.");
         }
         catch (Exception ex)
         {
+            _logger.Error(ex, "Error saving project XML.");
             InfoMessage?.Invoke($"Error saving project XML: {ex.Message}");
             throw;
         }
@@ -940,10 +967,12 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 );
             }
 
+            _logger.Information("No existing project XML found at: {RelativePath}", relativePath);
             return null;
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.Error(ex, "Error finding project XML URI.");
             return null;
         }
     }
@@ -986,6 +1015,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             }
         }
 
+        _logger.Information("Project creation cancelled by user.");
         return null;
     }
 
@@ -1075,12 +1105,17 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                         return;
                     }
 
+                    _logger.Information("ARCore is available. Proceeding to create session.");
                     InfoMessage?.Invoke("Creating ARCore session...");
+
                     _session = new Session(_ctx, [Session.Feature.SharedCamera]);
+
+                    _logger.Information("ARCore session created successfully.");
                     InfoMessage?.Invoke("ARCore session created successfully");
                 }
                 catch (Java.Lang.ClassNotFoundException ex)
                 {
+                    _logger.Error(ex, "ARCore class not found (ProGuard issue).");
                     GuidanceUpdated?.Invoke(new GuidanceState
                     {
                         Hint = $"ARCore class not found (ProGuard issue): {ex.Message}"
@@ -1089,6 +1124,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 }
                 catch (UnavailableException e)
                 {
+                    _logger.Error(e, "ARCore unavailable.");
                     GuidanceUpdated?.Invoke(new GuidanceState
                     {
                         Hint = $"ARCore unavailable: {e.Message}"
@@ -1097,6 +1133,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 }
                 catch (Exception e)
                 {
+                    _logger.Error(e, "ARCore error.");
                     GuidanceUpdated?.Invoke(new GuidanceState
                     {
                         Hint = $"ARCore error: {e.GetType().Name} - {e.Message}"
@@ -1112,6 +1149,8 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 config.SetLightEstimationMode(Config.LightEstimationMode.EnvironmentalHdr);
                 _session?.Configure(config);
 
+                _logger.Information("ARCore session configured successfully.");
+
                 StartBackgroundThread();
             }
 
@@ -1122,11 +1161,17 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
                 if (_session != null && _cameraTextureId != 0)
                     _session.SetCameraTextureName(_cameraTextureId);
+
+                _logger.Information("AR session resumed successfully.");
             }
-            catch { }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error resuming AR session.");
+            }
         }
         catch (Exception e)
         {
+            _logger.Error(e, "Error starting AR session.");
             GuidanceUpdated?.Invoke(new GuidanceState { Hint = $"Error starting AR: {e.Message}" });
         }
     }
@@ -1153,13 +1198,14 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
     public void Stop()
     {
-        try { _glView?.OnPause(); _session?.Pause(); } catch { }
+        try { _glView?.OnPause(); _session?.Pause(); } catch (Exception ex) { _logger.Error(ex, "Error stopping AR session."); }
     }
 
     public void RequestCapture()
     {
         if (string.IsNullOrEmpty(CurrentProjectFolder))
         {
+            _logger.Information("No active project. Create a new project first.");
             InfoMessage?.Invoke("No active project. Create a new project first.");
             return;
         }
@@ -1199,6 +1245,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             var cameraIdList = cameraManager.GetCameraIdList();
             if (cameraIdList == null || cameraIdList.Length == 0)
             {
+                _logger.Warning("No camera found on the device.");
                 InfoMessage?.Invoke("No camera found.");
                 _capturing = false;
                 return;
@@ -1210,6 +1257,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             var characteristics = cameraManager.GetCameraCharacteristics(cameraId);
             if (characteristics == null)
             {
+                _logger.Error("Cannot get camera characteristics for camera ID: {CameraId}", cameraId);
                 InfoMessage?.Invoke("Cannot get camera characteristics.");
                 _capturing = false;
                 return;
@@ -1230,6 +1278,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 }
                 catch (Exception ex)
                 {
+                    _logger.Error(ex, "Failed to open camera.");
                     MainThread.BeginInvokeOnMainThread(() =>
                     {
                         InfoMessage?.Invoke($"Failed to open camera: {ex.Message}");
@@ -1240,6 +1289,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         }
         catch (Exception ex)
         {
+            _logger.Error(ex, "Camera setup error.");
             InfoMessage?.Invoke($"Camera setup error: {ex.Message}");
             _capturing = false;
         }
@@ -1262,6 +1312,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
         if (_session != null && width > 0 && height > 0)
         {
+            _logger.Information("Surface changed: width={Width}, height={Height}, rotation={Rotation}", width, height, GetDisplayRotation());
             _session.SetDisplayGeometry((int)GetDisplayRotation(), width, height);
         }
     }
@@ -1367,6 +1418,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         }
         catch (Exception e)
         {
+            _logger.Error(e, "Error updating AR session.");
             GuidanceUpdated?.Invoke(new GuidanceState { Hint = $"Error: {e.Message}" });
         }
     }
@@ -1384,8 +1436,9 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             return disp != null ? disp.Rotation : SurfaceOrientation.Rotation0;
 #pragma warning restore CA1422
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.Error(ex, "Error getting display rotation.");
             return SurfaceOrientation.Rotation0;
         }
     }
@@ -1673,8 +1726,9 @@ void main() {
 
             _quadTexCoordsXf.Position(0);
         }
-        catch (Java.Lang.NoSuchMethodError)
+        catch (Java.Lang.NoSuchMethodError ex)
         {
+            _logger.Error(ex, "Error transforming display UV coordinates.");
         }
     }
 
@@ -1717,6 +1771,7 @@ void main() {
         }
         catch (Exception ex)
         {
+            _logger.Error(ex, "Error processing captured image.");
             InfoMessage?.Invoke($"Capture error: {ex.Message}");
         }
         finally
@@ -1745,6 +1800,7 @@ void main() {
                         var largestSize = sizes.OrderByDescending(s => s.Width * s.Height).First();
                         _cameraWidth = largestSize.Width;
                         _cameraHeight = largestSize.Height;
+                        _logger.Information("Camera resolution detected: {Width}x{Height}", _cameraWidth, _cameraHeight);
                         InfoMessage?.Invoke($"Camera resolution detected: {_cameraWidth}x{_cameraHeight}");
                     }
                 }
@@ -1752,6 +1808,7 @@ void main() {
         }
         catch (Exception ex)
         {
+            _logger.Error(ex, "Could not detect camera capabilities, using defaults.");
             InfoMessage?.Invoke($"Could not detect camera capabilities, using defaults: {ex.Message}");
         }
     }
@@ -1790,7 +1847,10 @@ void main() {
     private class CameraStateCallback : CameraDevice.StateCallback
     {
         private readonly ArCoreService _service;
-        public CameraStateCallback(ArCoreService service) => _service = service;
+        public CameraStateCallback(ArCoreService service)
+        {
+            _service = service;
+        } 
 
         public override void OnOpened(CameraDevice camera)
         {
@@ -1806,6 +1866,7 @@ void main() {
             }
             catch (Exception ex)
             {
+                _service._logger.Error(ex, "Camera setup error.");
                 _service.InfoMessage?.Invoke($"Camera setup error: {ex.Message}");
             }
         }
@@ -1835,7 +1896,10 @@ void main() {
     private class CaptureSessionCallback : CameraCaptureSession.StateCallback
     {
         private readonly ArCoreService _service;
-        public CaptureSessionCallback(ArCoreService service) => _service = service;
+        public CaptureSessionCallback(ArCoreService service)
+        {
+            _service = service;
+        }
 
         public override void OnConfigured(CameraCaptureSession session)
         {
@@ -1855,9 +1919,12 @@ void main() {
                     new WaitForAfCallback(_service, session),
                     _service._backgroundHandler
                 );
+
+                _service._logger.Information("Waiting for AF lock...");
             }
             catch (Exception ex)
             {
+                _service._logger.Error(ex, "Camera session error.");
                 _service.InfoMessage?.Invoke($"Camera session error: {ex.Message}");
                 _service._capturing = false;
             }
@@ -1865,6 +1932,7 @@ void main() {
 
         public override void OnConfigureFailed(CameraCaptureSession session)
         {
+            _service._logger.Error("Camera session configuration failed.");
             _service._capturing = false;
         }
     }
@@ -1918,6 +1986,7 @@ void main() {
                 }
                 catch (Exception ex)
                 {
+                    _service._logger.Error(ex, "AF retry error.");
                     _service.InfoMessage?.Invoke($"AF retry error: {ex.Message}");
                     FireStillCapture();
                 }
@@ -1954,6 +2023,7 @@ void main() {
             }
             catch (Exception ex)
             {
+                _service._logger.Error(ex, "Still capture error.");
                 _service.InfoMessage?.Invoke($"Still capture error: {ex.Message}");
                 _service._capturing = false;
             }
