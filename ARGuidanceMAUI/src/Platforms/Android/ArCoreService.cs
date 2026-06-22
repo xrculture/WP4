@@ -1185,15 +1185,64 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
         _capturing = true;
 
-        if (_imageReader == null)
+        try
         {
-            _imageReader = ImageReader.NewInstance(_cameraWidth, _cameraHeight, ImageFormatType.Jpeg, 2);
-            _imageReader.SetOnImageAvailableListener(new ImageAvailableListener(OnImageAvailable), _backgroundHandler);
-        }
+            // Add null checks and error handling
+            var cameraManager = _ctx.GetSystemService(Context.CameraService) as CameraManager;
+            if (cameraManager == null)
+            {
+                InfoMessage?.Invoke("Camera manager not available.");
+                _capturing = false;
+                return;
+            }
 
-        var cameraManager = _ctx.GetSystemService(Context.CameraService) as CameraManager;
-        string cameraId = cameraManager?.GetCameraIdList().First()!;
-        cameraManager?.OpenCamera(cameraId, new CameraStateCallback(this), _backgroundHandler);
+            var cameraIdList = cameraManager.GetCameraIdList();
+            if (cameraIdList == null || cameraIdList.Length == 0)
+            {
+                InfoMessage?.Invoke("No camera found.");
+                _capturing = false;
+                return;
+            }
+
+            string cameraId = cameraIdList.First();
+
+            // Check if camera is available (not in use)
+            var characteristics = cameraManager.GetCameraCharacteristics(cameraId);
+            if (characteristics == null)
+            {
+                InfoMessage?.Invoke("Cannot get camera characteristics.");
+                _capturing = false;
+                return;
+            }
+
+            if (_imageReader == null)
+            {
+                _imageReader = ImageReader.NewInstance(_cameraWidth, _cameraHeight, ImageFormatType.Jpeg, 2);
+                _imageReader.SetOnImageAvailableListener(new ImageAvailableListener(OnImageAvailable), _backgroundHandler);
+            }
+
+            // Add delay to ensure ARCore has released camera if needed
+            _backgroundHandler?.PostDelayed(() =>
+            {
+                try
+                {
+                    cameraManager.OpenCamera(cameraId, new CameraStateCallback(this), _backgroundHandler);
+                }
+                catch (Exception ex)
+                {
+                    MainThread.BeginInvokeOnMainThread(() =>
+                    {
+                        InfoMessage?.Invoke($"Failed to open camera: {ex.Message}");
+                        _capturing = false;
+                    });
+                }
+            }, 100);
+        }
+        catch (Exception ex)
+        {
+            InfoMessage?.Invoke($"Camera setup error: {ex.Message}");
+            _capturing = false;
+        }
     }
 
     // GLSurfaceView.IRenderer
