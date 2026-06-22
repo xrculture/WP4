@@ -73,11 +73,11 @@ public class ArCapturePage : ContentPage
         };
         capture.Clicked += (_, __) => _ar.RequestCapture();
 
-        var newProject = new Button { 
-            Text = "New Project",
+        var options = new Button { 
+            Text = "☰",
             FontAutoScalingEnabled = false
         };
-        newProject.Clicked += OnNewProjectClicked;
+        options.Clicked += OnOptionsClicked;
 
         var projects = new Button { 
             Text = "Projects",
@@ -121,14 +121,14 @@ public class ArCapturePage : ContentPage
         {
             Orientation = StackOrientation.Horizontal,
             Spacing = 12,
-            Children = { newProject, projects, capture }
+            Children = { options, projects, capture }
         };
 
         overlay.Children.Add(buttonRow);
         Grid.SetRow(buttonRow, 2);
 
-        newProject.HorizontalOptions = LayoutOptions.Start;
-        newProject.HorizontalOptions = LayoutOptions.Center;
+        options.HorizontalOptions = LayoutOptions.Start;
+        projects.HorizontalOptions = LayoutOptions.Center;
         capture.HorizontalOptions = LayoutOptions.End;
         buttonRow.Margin = new Thickness(12);
 
@@ -220,15 +220,15 @@ public class ArCapturePage : ContentPage
         });
     }
 
-    private async void OnNewProjectClicked(object? sender, EventArgs e)
+    private async void OnOptionsClicked(object? sender, EventArgs e)
     {
         try
         {
-            _ar.NewProject();
+            _ar.Options();
         }
         catch (Exception ex)
         {
-            await DisplayAlert("Error", $"Failed to create a project: {ex.Message}", "OK");
+            await DisplayAlert("Error", $"Failed to open options: {ex.Message}", "OK");
         }
     }
 

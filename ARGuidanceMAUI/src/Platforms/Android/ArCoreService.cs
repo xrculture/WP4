@@ -103,10 +103,27 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         }
     }
 
-    public void NewProject()
+    public async void Options()
     {
-        ResetDataStructures();
-        CreateNewProject();        
+        if (Application.Current?.MainPage == null) return;
+
+        var actions = new List<string>() { "New Project", "Export Log" };
+        var action = await Application.Current.MainPage.DisplayActionSheetAsync(
+            $"Options",
+            "Cancel",
+            null,
+            actions.ToArray()
+        );
+
+        if (action == "New Project")
+        {
+            ResetDataStructures();
+            CreateNewProject();
+        }
+        else if (action == "Export Log")
+        {
+            //await ExportLogAsync();
+        }
     }
 
     public void Projects()
@@ -119,6 +136,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
                 if (projects.Count == 0)
                 {
+                    _logger.Information("No projects found.");
                     InfoMessage?.Invoke("No projects found.");
                     return;
                 }
@@ -128,7 +146,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
                 if (Application.Current?.MainPage != null)
                 {
-                    var selectedProject = await Application.Current.MainPage.DisplayActionSheet(
+                    var selectedProject = await Application.Current.MainPage.DisplayActionSheetAsync(
                         "Select Project",
                         "Cancel",
                         null,
@@ -299,7 +317,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             }
         }
 
-        var action = await Application.Current.MainPage.DisplayActionSheet(
+        var action = await Application.Current.MainPage.DisplayActionSheetAsync(
             $"Name: {project.Name}",
             "Cancel",
             null,
