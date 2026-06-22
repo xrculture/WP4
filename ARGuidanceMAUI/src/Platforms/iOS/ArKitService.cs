@@ -75,10 +75,11 @@ public class ArKitService : NSObject, IArPlatformService, IARSessionDelegate
 
     public void Stop() => _session.Pause();
 
-    public void NewProject()
+    public Task Options()
     {
         CreateNewProject();
         ResetDataStructures();
+        return Task.CompletedTask;
     }
 
     public void Projects()

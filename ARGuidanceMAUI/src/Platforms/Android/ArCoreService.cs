@@ -103,27 +103,40 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         }
     }
 
-    public async void Options()
+    public Task Options()
     {
-        if (Application.Current?.MainPage == null) return;
+        if (Application.Current?.MainPage == null) return Task.CompletedTask;
 
-        var actions = new List<string>() { "New Project", "Export Log" };
-        var action = await Application.Current.MainPage.DisplayActionSheetAsync(
-            $"Options",
-            "Cancel",
-            null,
-            actions.ToArray()
-        );
+        MainThread.BeginInvokeOnMainThread(async () =>
+        {
+            try
+            {
+                var actions = new List<string>() { "New Project", "Share Log" };
+                var action = await Application.Current.MainPage.DisplayActionSheetAsync(
+                    $"Options",
+                    "Cancel",
+                    null,
+                    actions.ToArray()
+                );
 
-        if (action == "New Project")
-        {
-            ResetDataStructures();
-            CreateNewProject();
-        }
-        else if (action == "Export Log")
-        {
-            //await ExportLogAsync();
-        }
+                if (action == "New Project")
+                {
+                    ResetDataStructures();
+                    CreateNewProject();
+                }
+                else if (action == "Share Log")
+                {
+                    await ShareLogAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error displaying options.");
+                InfoMessage?.Invoke($"Error displaying options: {ex.Message}");
+            }
+        });
+
+        return Task.CompletedTask;
     }
 
     public void Projects()
@@ -170,6 +183,45 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 InfoMessage?.Invoke($"Error loading projects: {ex.Message}");
             }
         });
+    }
+
+    public async Task ShareLogAsync()
+    {
+        try
+        {
+            var logsDir = System.IO.Path.Combine(FileSystem.AppDataDirectory, "logs");
+
+            if (!Directory.Exists(logsDir))
+            {
+                await ShowMessageAsync("Share Log", "No log files found.");
+                return;
+            }
+
+            // Get all log files
+            var logFiles = Directory.GetFiles(logsDir, "*.txt");
+
+            if (logFiles.Length == 0)
+            {
+                await ShowMessageAsync("Share Log", "No log files found.");
+                return;
+            }
+
+            // Get the most recent log file
+            var latestLogFile = logFiles.OrderByDescending(f => File.GetLastWriteTime(f)).First();
+
+            await Share.Default.RequestAsync(new ShareFileRequest
+            {
+                Title = "Share Log File",
+                File = new ShareFile(latestLogFile)
+            });
+
+            _logger.Information("Log file shared: {LogFile}", latestLogFile);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Failed to share log file");
+            await ShowMessageAsync("Error", $"Failed to share log file: {ex.Message}");
+        }
     }
 
     private async Task<List<ProjectInfo>> GetAllProjectsAsync()
@@ -1861,8 +1913,8 @@ void main() {
         }
     }
 
-    // CameraDevice.StateCallback implementation
-    private class CameraStateCallback : CameraDevice.StateCallback
+// CameraDevice.StateCallback implementation
+private class CameraStateCallback : CameraDevice.StateCallback
     {
         private readonly ArCoreService _service;
         public CameraStateCallback(ArCoreService service)
