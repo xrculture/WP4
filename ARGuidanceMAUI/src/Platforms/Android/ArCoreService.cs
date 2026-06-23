@@ -39,8 +39,8 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
     private int _cameraTextureId;
 
     // Surface/display
-    private int _surfaceWidth;
-    private int _surfaceHeight;
+    private int _surfaceWidth = 0;
+    private int _surfaceHeight = 0;
 
     // Background rendering
     private int _bgProgram;
@@ -1451,14 +1451,14 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 }
                 catch (Exception ex)
                 {
+                    _capturing = false;
                     _logger.Error(ex, "Failed to open camera.");
                     MainThread.BeginInvokeOnMainThread(() =>
                     {
-                        InfoMessage?.Invoke($"Failed to open camera: {ex.Message}");
-                        _capturing = false;
+                        InfoMessage?.Invoke($"Failed to open camera: {ex.Message}");                        
                     });
                 }
-            }, 100);
+            }, 200);
         }
         catch (Exception ex)
         {
@@ -1479,15 +1479,23 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
     public void OnSurfaceChanged(IGL10? gl, int width, int height)
     {
-        _surfaceWidth = width;
-        _surfaceHeight = height;
-        GLES20.GlViewport(0, 0, width, height);
-
-        if (_session != null && width > 0 && height > 0)
+        try
         {
-            _logger.Information("Surface changed: width={Width}, height={Height}, rotation={Rotation}", width, height, GetDisplayRotation());
-            _session.SetDisplayGeometry((int)GetDisplayRotation(), width, height);
+            GLES20.GlViewport(0, 0, width, height);
+
+            if ((_session != null) && (width > 0) && (height > 0) && (_surfaceWidth != width) && (_surfaceHeight != height))
+            {
+                _surfaceWidth = width;
+                _surfaceHeight = height;
+                _session.SetDisplayGeometry((int)GetDisplayRotation(), width, height);
+                _logger.Information("Surface changed: width={Width}, height={Height}, rotation={Rotation}", width, height, GetDisplayRotation());
+            }
         }
+        catch(Exception ex) 
+        {
+            _logger.Error(ex, "Error in OnSurfaceChanged.");
+        }
+
     }
 
     public void OnDrawFrame(IGL10? gl)
@@ -1507,11 +1515,6 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             {
                 GuidanceUpdated?.Invoke(new GuidanceState { Hint = "Capturing..." });
                 return;
-            }
-
-            if (_surfaceWidth > 0 && _surfaceHeight > 0)
-            {
-                _session.SetDisplayGeometry((int)GetDisplayRotation(), _surfaceWidth, _surfaceHeight);
             }
 
             var frame = _session.Update();
