@@ -112,7 +112,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         {
             try
             {
-                var actions = new List<string>() { "New Project", "Projects", "Share Log" };
+                var actions = new List<string>() { "New Project", "Projects", "Server URL", "Share Log" };
                 var action = await Application.Current.MainPage.DisplayActionSheetAsync(
                     $"Options",
                     "Cancel",
@@ -128,6 +128,10 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 else if (action == "Projects")
                 {
                     await ShowProjectsUI();
+                }
+                else if (action == "Server URL")
+                {
+                    await ShowServerUI();
                 }
                 else if (action == "Share Log")
                 {
@@ -169,7 +173,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                     projectNames
                 );
 
-                if (selectedProject != null && selectedProject != "Cancel")
+                if (!string.IsNullOrEmpty(selectedProject) && selectedProject != "Cancel")
                 {
                     // Find the selected project
                     var index = Array.IndexOf(projectNames, selectedProject);
@@ -185,6 +189,97 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             _logger.Error(ex, "Error loading projects.");
             InfoMessage?.Invoke($"Error loading projects: {ex.Message}");
         }
+    }
+
+    public async Task ShowServerUI()
+    {
+        try
+        {
+            if (Application.Current?.MainPage != null)
+            {
+                var serverUrl = LoadServerUrlFromSettings();
+                serverUrl = await Application.Current.MainPage.DisplayPromptAsync(
+                    "Server URL",
+                    "Enter server URL:",
+                    initialValue: serverUrl,
+                    accept: "OK",
+                    cancel: "Cancel",
+                    placeholder: "https://example.com",
+                    maxLength: 200
+                );
+
+                if (!string.IsNullOrEmpty(serverUrl) && serverUrl != "Cancel")
+                {
+                    SaveServerUrlToSettings(serverUrl);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error setting up server.");
+            InfoMessage?.Invoke($"Error setting up server: {ex.Message}");
+        }
+    }
+
+    private string LoadServerUrlFromSettings()
+    {
+        try
+        {
+            var settingsDir = System.IO.Path.Combine(FileSystem.AppDataDirectory, "settings");
+            if (!Directory.Exists(settingsDir))
+            {
+                Directory.CreateDirectory(settingsDir);
+            }
+
+            var settingsFile = System.IO.Path.Combine(settingsDir, "appsettings.xml");
+            if (File.Exists(settingsFile))
+            {
+                var xmlContent = File.ReadAllText(settingsFile);
+                var doc = new XmlDocument();
+                doc.LoadXml(xmlContent);
+
+                var serverUrlNode = doc.SelectSingleNode("//ServerUrl");
+                if (serverUrlNode != null)
+                {
+                    return serverUrlNode.InnerText;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error loading server URL from settings.");
+            InfoMessage?.Invoke($"Error loading server URL from settings: {ex.Message}");
+        }
+
+        return _3DReconstructionServerUrl;
+    }
+
+    private string SaveServerUrlToSettings(string serverUrl)
+    {
+        try
+        {
+            var settingsDir = System.IO.Path.Combine(FileSystem.AppDataDirectory, "settings");
+            if (!Directory.Exists(settingsDir))
+            {
+                Directory.CreateDirectory(settingsDir);
+            }
+
+            var settingsFile = System.IO.Path.Combine(settingsDir, "appsettings.xml");
+            StringBuilder settingsXML = new();
+            settingsXML.Append("<AppSettings>");
+            settingsXML.Append("<ServerUrl><![CDATA[");
+            settingsXML.Append(serverUrl);
+            settingsXML.Append("]]></ServerUrl>");
+            settingsXML.Append("</AppSettings>");
+            File.WriteAllText(settingsFile, settingsXML.ToString());
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error saving server URL to settings.");
+            InfoMessage?.Invoke($"Error saving server URL to settings: {ex.Message}");
+        }
+
+        return serverUrl;
     }
 
     public async Task ShareLogAsync()
