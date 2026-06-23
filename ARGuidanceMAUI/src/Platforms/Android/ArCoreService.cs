@@ -59,6 +59,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
     private int _featuresCount = 0;
     private List<Pose> _poses = new();
     private List<float> _yaws = new();
+    private bool _cameraTracking = false;
     private bool _capturing = false;
     private bool _readyToCapture = false;
     private int _captures = 0;
@@ -87,7 +88,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
     {
         _ctx = global::Android.App.Application.Context!;
         _logger = Log.Logger.ForContext<ArCoreService>();
-        _3DReconstructionServerUrl = "http://xrculture.rdf.bg:30026/";        
+        _3DReconstructionServerUrl = "http://xrculture.rdf.bg:30026/";
         DetectCameraCapabilities();
     }
 
@@ -529,7 +530,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             catch (Exception ex)
             {
                 _logger.Error(ex, "Error creating zip file.");
-                InfoMessage?.Invoke($"Error creating zip file: {ex.Message}");                
+                InfoMessage?.Invoke($"Error creating zip file: {ex.Message}");
             }
             finally
             {
@@ -1274,6 +1275,12 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
     public void RequestCapture()
     {
+        if (!_cameraTracking)
+        {
+            _logger.Information("Cannot capture: AR tracking not ready.");
+            return;
+        }
+
         if (string.IsNullOrEmpty(CurrentProjectFolder))
         {
             _logger.Information("No active project. Create a new project first.");
@@ -1394,6 +1401,8 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
         try
         {
+            _cameraTracking = false;
+
             if (_session == null)
             {
                 return;
@@ -1429,6 +1438,8 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 GuidanceUpdated?.Invoke(new GuidanceState { Hint = "Initializing..." });
                 return;
             }
+
+            _cameraTracking = true;
 
             using var pointCloud = frame.AcquirePointCloud();
             var idsBuf = pointCloud.Ids;
@@ -1914,14 +1925,14 @@ void main() {
         }
     }
 
-// CameraDevice.StateCallback implementation
-private class CameraStateCallback : CameraDevice.StateCallback
+    // CameraDevice.StateCallback implementation
+    private class CameraStateCallback : CameraDevice.StateCallback
     {
         private readonly ArCoreService _service;
         public CameraStateCallback(ArCoreService service)
         {
             _service = service;
-        } 
+        }
 
         public override void OnOpened(CameraDevice camera)
         {
@@ -2062,7 +2073,7 @@ private class CameraStateCallback : CameraDevice.StateCallback
                     FireStillCapture();
                 }
             }
-        }        
+        }
 
         private void FireStillCapture()
         {
