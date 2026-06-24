@@ -6,7 +6,6 @@ public interface IArPlatformService
 {
     event Action<GuidanceState>? GuidanceUpdated;
     event Action<CapturePackage>? CaptureReady;
-    event Action<string>? InfoMessage;
 
     void Start();
     void Stop();
