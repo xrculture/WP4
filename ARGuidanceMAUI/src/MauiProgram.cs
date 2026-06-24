@@ -30,7 +30,7 @@ public static class MauiProgram
 #if DEBUG
             .MinimumLevel.Debug()
 #else
-            .MinimumLevel.Information()
+            .MinimumLevel.Debug()//.MinimumLevel.Information()
 #endif
             .WriteTo.File(logPath, rollingInterval: RollingInterval.Day)
             .CreateLogger();

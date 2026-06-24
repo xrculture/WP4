@@ -140,14 +140,13 @@ public class ArCapturePage : ContentPage
 
 #if ANDROID
     // Save JPEG bytes to specific project folder using MediaStore
-    public static async Task SaveImageToPicturesAsync(byte[] jpegBytes, string fileName, string projectFolder)
+    public static async Task SaveImageToPicturesAsync(byte[]? jpegBytes, string fileName, string projectFolder)
     {
         var context = Android.App.Application.Context;
         var values = new ContentValues();
         values.Put(MediaStore.Images.Media.InterfaceConsts.DisplayName, fileName);
         values.Put(MediaStore.Images.Media.InterfaceConsts.MimeType, "image/jpeg");
-        
-        // Convert Documents path to Pictures for images (Images.Media requires Pictures)
+
         var imagePath = projectFolder.Replace("Documents/", "Pictures/");
         values.Put(MediaStore.Images.Media.InterfaceConsts.RelativePath, imagePath);
 
@@ -158,8 +157,11 @@ public class ArCapturePage : ContentPage
             if (stream != null)
             {
                 await stream.WriteAsync(jpegBytes, 0, jpegBytes.Length);
+                await stream.FlushAsync();
             }
         }
+
+        jpegBytes = null;
     }
 #elif IOS
     // Save JPEG bytes to Photos library for iOS

@@ -30,7 +30,6 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 {
     public event Action<GuidanceState>? GuidanceUpdated;
     public event Action<CapturePackage>? CaptureReady;
-    public event Action<string>? InfoMessage;
     public event Action<ArDebugTelemetry>? DebugUpdated;
 
     private readonly Context _ctx;
@@ -756,7 +755,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             }
             catch
             {
-                _logger.Warning("Failed to show message dialog. Falling back to InfoMessage event.");
+                _logger.Warning("Failed to show message dialog.");
                 System.Diagnostics.Debug.WriteLine($"{title}: {message}");
             }
         });
@@ -1361,6 +1360,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         {
             _logger.Information("Cannot capture: AR tracking not ready.");
             return;
+
         }
 
         if (string.IsNullOrEmpty(CurrentProjectFolder))
@@ -1379,7 +1379,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         //if (_featuresCount == 0)
         //{
         //    _logger.Information("Not enough feature points detected. Move around to add more features.");
-        //    return;
+        //    return Task.CompletedTask;
         //}
 
         if (_capturing)
@@ -1392,6 +1392,13 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
         try
         {
+            if (_imageReader != null)
+            {
+                _imageReader.Close();
+                _imageReader.Dispose();
+                _imageReader = null;
+            }
+
             // Add null checks and error handling
             var cameraManager = _ctx.GetSystemService(Context.CameraService) as CameraManager;
             if (cameraManager == null)
@@ -1422,7 +1429,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
             if (_imageReader == null)
             {
-                _imageReader = ImageReader.NewInstance(_cameraWidth, _cameraHeight, ImageFormatType.Jpeg, 2);
+                _imageReader = ImageReader.NewInstance(_cameraWidth, _cameraHeight, ImageFormatType.Jpeg, 3);
                 _imageReader.SetOnImageAvailableListener(new ImageAvailableListener(OnImageAvailable), _backgroundHandler);
             }
 
@@ -1920,9 +1927,13 @@ void main() {
                         MetadataJson = "",
                         FileBaseName = $"cap_{image.Timestamp}"
                     });
+
+                    jpegBytes = null;
                 }
                 image.Close();
             }
+
+            CloseCameraSession();
 
             if (_poses.Count > 100)
             {
@@ -1933,6 +1944,14 @@ void main() {
             _poses.Add(_currentPose!);
             _yaws.Add(_currentYaw);
             _captures++;
+
+            // Force garbage collection after every 5 captures
+            if (_captures % 5 == 0)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+            }
         }
         catch (Exception ex)
         {
@@ -1941,6 +1960,19 @@ void main() {
         finally
         {
             _capturing = false;
+        }
+    }
+
+    private void CloseCameraSession()
+    {
+        try
+        {
+            _cameraDevice?.Close();
+            _cameraDevice = null;
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error closing camera device.");
         }
     }
 
@@ -1960,8 +1992,14 @@ void main() {
 
                     if (sizes != null && sizes.Length > 0)
                     {
-                        // Get the largest available size (highest resolution)
                         var largestSize = sizes.OrderByDescending(s => s.Width * s.Height).First();
+                        // Limit to 8MP for memory-constrained devices
+                        if (largestSize.Width * largestSize.Height > 8_000_000)
+                        {
+                            largestSize = sizes.Where(s => s.Width * s.Height <= 8_000_000)
+                                .OrderByDescending(s => s.Width * s.Height)
+                                .FirstOrDefault() ?? largestSize;
+                        }
                         _cameraWidth = largestSize.Width;
                         _cameraHeight = largestSize.Height;
                         _logger.Information("Camera resolution detected: {Width}x{Height}", _cameraWidth, _cameraHeight);
@@ -2034,12 +2072,16 @@ void main() {
 
         public override void OnDisconnected(CameraDevice camera)
         {
+            _service._logger.Information("Camera disconnected.");
+
             camera.Close();
             _service._cameraDevice = null;
         }
 
         public override void OnError(CameraDevice camera, CameraError error)
         {
+            _service._logger.Error("Camera error: {Error}", error);
+
             camera.Close();
             _service._cameraDevice = null;
         }
