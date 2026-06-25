@@ -1929,6 +1929,7 @@ void main() {
     {
         Image? image = null;
         bool captureSuccess = false;
+        bool shouldReleaseSemaphore = false; // Track if this is the actual capture
 
         try
         {
@@ -1946,6 +1947,8 @@ void main() {
                 return;
             }
 
+            // This is the actual capture frame
+            shouldReleaseSemaphore = true;
             _logger.Information("OnImageAvailable: Processing capture!");
             _readyToCapture = false;
 
@@ -1962,7 +1965,7 @@ void main() {
                 {
                     image?.Close();
                     image?.Dispose();
-                    image = null; // Prevent double close in finally
+                    image = null;
                 }
                 catch (Exception ex)
                 {
@@ -2018,6 +2021,7 @@ void main() {
         catch (Exception ex)
         {
             _logger.Error(ex, "Error processing captured image.");
+            shouldReleaseSemaphore = true; // Release on error too
         }
         finally
         {
@@ -2032,25 +2036,29 @@ void main() {
                 catch { }
             }
 
-            _capturing = false;
+            // Only update _capturing and release semaphore if this was the actual capture
+            if (shouldReleaseSemaphore)
+            {
+                _capturing = false;
 
-            // Release semaphore
-            try
-            {
-                _captureSemaphore.Release();
-                _logger.Information("Capture completed. Success: {Success}, Semaphore released", captureSuccess);
-            }
-            catch (Exception ex)
-            {
-                _logger.Warning(ex, "Error releasing semaphore");
-            }
+                // Release semaphore
+                try
+                {
+                    _captureSemaphore.Release();
+                    _logger.Information("Capture completed. Success: {Success}, Semaphore released", captureSuccess);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error releasing semaphore");
+                }
 
-            // GC every 3 captures
-            if (_captures % 3 == 0)
-            {
-                GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
-                GC.WaitForPendingFinalizers();
-                GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
+                // GC every 3 captures
+                if (_captures % 3 == 0)
+                {
+                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
+                    GC.WaitForPendingFinalizers();
+                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
+                }
             }
         }
     }
