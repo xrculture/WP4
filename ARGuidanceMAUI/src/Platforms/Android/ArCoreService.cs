@@ -12,6 +12,7 @@ using ARGuidanceMAUI.Models;
 using ARGuidanceMAUI.Services;
 using Google.AR.Core;
 using Google.AR.Core.Exceptions;
+using Java.Net;
 using Java.Nio;
 using Javax.Microedition.Khronos.Opengles; // OpenGL ES + EGL types (for IGL10, EGLConfig)
 using Microsoft.Extensions.Logging;
@@ -207,9 +208,18 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                     maxLength: 200
                 );
 
-                if (!string.IsNullOrEmpty(serverUrl) && serverUrl != "Cancel")
+                if (string.IsNullOrEmpty(serverUrl) || (serverUrl == "Cancel"))
+                {
+                    return;
+                }
+
+                if (IsValidHttpUrl(serverUrl))
                 {
                     SaveServerUrlToSettings(serverUrl);
+                }
+                else 
+                { 
+                    await ShowMessageAsync("Invalid URL", "Please enter a valid HTTP or HTTPS URL."); 
                 }
             }
         }
@@ -217,6 +227,12 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         {
             _logger.Error(ex, "Error setting up server.");
         }
+    }
+
+    private bool IsValidHttpUrl(string url)
+    {
+        return !string.IsNullOrEmpty(url) && Uri.TryCreate(url, UriKind.Absolute, out Uri? uriResult)
+            && (uriResult.Scheme == Uri.UriSchemeHttp || uriResult.Scheme == Uri.UriSchemeHttps);
     }
 
     private string LoadServerUrlFromSettings()
@@ -574,7 +590,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             }
 
             _logger.Information("Found {ImageCount} images for project '{ProjectName}'.", imageUris.Count, project.Name);
-            
+
             // Create zip file in temp folder
             var tempFolder = System.IO.Path.GetTempPath();
             var zipFileName = $"project_{DateTime.Now:yyyyMMdd_HHmmss}.zip";
