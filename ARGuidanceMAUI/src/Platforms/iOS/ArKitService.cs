@@ -17,7 +17,7 @@ namespace ARGuidanceMAUI.Platforms.iOS;
 public class ArKitService : NSObject, IArPlatformService, IARSessionDelegate
 {
     public event Action<GuidanceState>? GuidanceUpdated;
-    public event Action<CapturePackage>? CaptureReady;
+    public event Func<CapturePackage, Task>? CaptureReady;
     public event Action<string>? InfoMessage;
     //public event Action<ArDebugTelemetry>? DebugUpdated;#todo
 

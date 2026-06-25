@@ -5,7 +5,7 @@ namespace ARGuidanceMAUI.Services;
 public interface IArPlatformService
 {
     event Action<GuidanceState>? GuidanceUpdated;
-    event Action<CapturePackage>? CaptureReady;
+    public event Func<CapturePackage, Task>? CaptureReady;
 
     void Start();
     void Stop();

@@ -23,13 +23,14 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
 using ArFrame = Google.AR.Core.Frame;
+using Image = Android.Media.Image;
 
 namespace ARGuidanceMAUI.Platforms.Android;
 
 public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView.IRenderer
 {
     public event Action<GuidanceState>? GuidanceUpdated;
-    public event Action<CapturePackage>? CaptureReady;
+    public event Func<CapturePackage, Task>? CaptureReady;
     public event Action<ArDebugTelemetry>? DebugUpdated;
 
     private readonly Context _ctx;
@@ -64,6 +65,8 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
     private int _captures = 0;
     private const float MinPointConfidence = 0.05f;
 
+    private CameraCaptureSession? _captureSession;
+    private SemaphoreSlim _captureSemaphore = new SemaphoreSlim(1, 1);
     private CameraDevice? _cameraDevice;
     private ImageReader? _imageReader;
     private Handler? _backgroundHandler;
@@ -1354,13 +1357,12 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         }
     }
 
-    public void RequestCapture()
+    public async void RequestCapture()
     {
         if (!_cameraTracking)
         {
             _logger.Information("Cannot capture: AR tracking not ready.");
             return;
-
         }
 
         if (string.IsNullOrEmpty(CurrentProjectFolder))
@@ -1388,23 +1390,31 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             return;
         }
 
-        _capturing = true;
+        // Use semaphore to prevent concurrent captures
+        if (!await _captureSemaphore.WaitAsync(0))
+        {
+            _logger.Information("Capture already in progress (semaphore locked).");
+            return;
+        }
+
+        _logger.Information("Semaphore acquired, starting capture...");
 
         try
         {
-            if (_imageReader != null)
-            {
-                _imageReader.Close();
-                _imageReader.Dispose();
-                _imageReader = null;
-            }
+            _capturing = true;
 
-            // Add null checks and error handling
+            // Ensure previous resources are cleaned up
+            CleanupCameraResources();
+
+            // Small delay to ensure cleanup is complete
+            await Task.Delay(50);
+
             var cameraManager = _ctx.GetSystemService(Context.CameraService) as CameraManager;
             if (cameraManager == null)
             {
                 _logger.Warning("Camera manager not available.");
                 _capturing = false;
+                _captureSemaphore.Release();
                 return;
             }
 
@@ -1413,27 +1423,26 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             {
                 _logger.Warning("No camera found on the device.");
                 _capturing = false;
+                _captureSemaphore.Release();
                 return;
             }
 
             string cameraId = cameraIdList.First();
 
-            // Check if camera is available (not in use)
             var characteristics = cameraManager.GetCameraCharacteristics(cameraId);
             if (characteristics == null)
             {
                 _logger.Error("Cannot get camera characteristics for camera ID: {CameraId}", cameraId);
                 _capturing = false;
+                _captureSemaphore.Release();
                 return;
             }
 
-            if (_imageReader == null)
-            {
-                _imageReader = ImageReader.NewInstance(_cameraWidth, _cameraHeight, ImageFormatType.Jpeg, 3);
-                _imageReader.SetOnImageAvailableListener(new ImageAvailableListener(OnImageAvailable), _backgroundHandler);
-            }
+            // Create fresh ImageReader for each capture
+            _imageReader = ImageReader.NewInstance(_cameraWidth, _cameraHeight, ImageFormatType.Jpeg, 3);
+            _imageReader.SetOnImageAvailableListener(new ImageAvailableListener(OnImageAvailable), _backgroundHandler);
 
-            // Add delay to ensure ARCore has released camera if needed
+            // Add delay to ensure ARCore has released camera
             _backgroundHandler?.PostDelayed(() =>
             {
                 try
@@ -1444,6 +1453,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 {
                     _capturing = false;
                     _logger.Error(ex, "Failed to open camera.");
+                    _captureSemaphore.Release();
                 }
             }, 200);
         }
@@ -1451,6 +1461,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         {
             _logger.Error(ex, "Camera setup error.");
             _capturing = false;
+            _captureSemaphore.Release();
         }
     }
 
@@ -1898,42 +1909,80 @@ void main() {
         }
     }
 
-    private void OnImageAvailable(ImageReader? reader)
+    private async void OnImageAvailable(ImageReader? reader)
     {
+        Image? image = null;
+        bool captureSuccess = false;
+
         try
         {
-            using (var image = reader?.AcquireLatestImage())
+            image = reader?.AcquireLatestImage();
+            if (image == null)
             {
-                if (image == null) return;
+                _logger.Warning("OnImageAvailable: image is null");
+                return;
+            }
 
-                if (!_readyToCapture)
+            if (!_readyToCapture)
+            {
+                // This is an AF-phase frame — discard it
+                _logger.Information("OnImageAvailable: discarding AF frame");
+                return;
+            }
+
+            _logger.Information("OnImageAvailable: Processing capture!");
+            _readyToCapture = false;
+
+            var buffer = image.GetPlanes()?[0].Buffer;
+            if (buffer != null)
+            {
+                byte[] jpegBytes = new byte[buffer.Remaining()];
+                buffer.Get(jpegBytes);
+
+                _logger.Information("Captured image: {Size} bytes", jpegBytes.Length);
+
+                // Close image immediately after reading buffer
+                try
                 {
-                    // This is an AF-phase frame — discard it
-                    image.Close();
-                    return;
+                    image?.Close();
+                    image?.Dispose();
+                    image = null; // Prevent double close in finally
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error closing image");
                 }
 
-                _readyToCapture = false;
+                var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
-                var buffer = image.GetPlanes()?[0].Buffer;
-                if (buffer != null)
+                // Invoke async event handler and WAIT for it to complete
+                if (CaptureReady != null)
                 {
-                    byte[] jpegBytes = new byte[buffer.Remaining()];
-                    buffer.Get(jpegBytes);
-
-                    CaptureReady?.Invoke(new CapturePackage
+                    var package = new CapturePackage
                     {
                         JpegBytes = jpegBytes,
                         MetadataJson = "",
-                        FileBaseName = $"cap_{image.Timestamp}"
-                    });
+                        FileBaseName = $"cap_{timestamp}"
+                    };
 
-                    jpegBytes = null;
+                    try
+                    {
+                        // Wait for all handlers to complete
+                        await Task.WhenAll(
+                            CaptureReady.GetInvocationList()
+                                .Cast<Func<CapturePackage, Task>>()
+                                .Select(handler => handler(package))
+                        );
+
+                        _logger.Information("Image save completed successfully");
+                        captureSuccess = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Error in CaptureReady handler");
+                    }
                 }
-                image.Close();
             }
-
-            CloseCameraSession();
 
             if (_poses.Count > 100)
             {
@@ -1945,12 +1994,9 @@ void main() {
             _yaws.Add(_currentYaw);
             _captures++;
 
-            // Force garbage collection after every 5 captures
             if (_captures % 5 == 0)
             {
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                GC.Collect();
+                LogMemoryUsage();
             }
         }
         catch (Exception ex)
@@ -1959,7 +2005,129 @@ void main() {
         }
         finally
         {
+            // Close image if not already closed
+            if (image != null)
+            {
+                try
+                {
+                    image.Close();
+                    image.Dispose();
+                }
+                catch { }
+            }
+
             _capturing = false;
+
+            // Release semaphore
+            try
+            {
+                _captureSemaphore.Release();
+                _logger.Information("Capture completed. Success: {Success}, Semaphore released", captureSuccess);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Error releasing semaphore");
+            }
+
+            // GC every 3 captures
+            if (_captures % 3 == 0)
+            {
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
+                GC.WaitForPendingFinalizers();
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
+            }
+        }
+    }
+
+    private void CleanupCameraResources()
+    {
+        try
+        {
+            // Close capture session
+            if (_captureSession != null)
+            {
+                try
+                {
+                    _captureSession.Close();
+                    _captureSession.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error closing capture session.");
+                }
+                finally
+                {
+                    _captureSession = null;
+                }
+            }
+
+            // Close camera device
+            if (_cameraDevice != null)
+            {
+                try
+                {
+                    _cameraDevice.Close();
+                    _cameraDevice.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error closing camera device.");
+                }
+                finally
+                {
+                    _cameraDevice = null;
+                }
+            }
+
+            // Close image reader
+            if (_imageReader != null)
+            {
+                try
+                {
+                    _imageReader.Close();
+                    _imageReader.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error closing image reader.");
+                }
+                finally
+                {
+                    _imageReader = null;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error in CleanupCameraResources.");
+        }
+    }
+
+    private void LogMemoryUsage()
+    {
+        try
+        {
+            var runtime = Java.Lang.Runtime.GetRuntime();
+            if (runtime != null)
+            {
+                var usedMemMB = (runtime.TotalMemory() - runtime.FreeMemory()) / 1048576;
+                var maxMemMB = runtime.MaxMemory() / 1048576;
+                var percentUsed = (float)usedMemMB / maxMemMB * 100;
+
+                _logger.Information("Memory: {UsedMB}MB / {MaxMB}MB ({Percent:F1}%)",
+                    usedMemMB, maxMemMB, percentUsed);
+                if (percentUsed > 80)
+                {
+                    _logger.Warning("Memory usage critical: {Percent:F1}%", percentUsed);
+
+                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
+                    GC.WaitForPendingFinalizers();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Warning(ex, "Error logging memory usage.");
         }
     }
 
@@ -2106,6 +2274,8 @@ void main() {
 
         public override void OnConfigured(CameraCaptureSession session)
         {
+            _service._captureSession = session;
+
             try
             {
                 // Start a repeating request with AF trigger to lock focus
@@ -2129,6 +2299,7 @@ void main() {
             {
                 _service._logger.Error(ex, "Camera session error.");
                 _service._capturing = false;
+                _service._captureSemaphore.Release();
             }
         }
 
@@ -2136,6 +2307,7 @@ void main() {
         {
             _service._logger.Error("Camera session configuration failed.");
             _service._capturing = false;
+            _service._captureSemaphore.Release();
         }
     }
 
@@ -2175,7 +2347,6 @@ void main() {
             }
             else
             {
-                // Re-trigger AF check
                 try
                 {
                     var triggerRequest = _service._cameraDevice!.CreateCaptureRequest(CameraTemplate.StillCapture);
@@ -2189,7 +2360,6 @@ void main() {
                 catch (Exception ex)
                 {
                     _service._logger.Error(ex, "AF retry error.");
-                    _service._logger.Error($"AF retry error: {ex.Message}");
                     FireStillCapture();
                 }
             }
@@ -2213,13 +2383,14 @@ void main() {
                 stillRequest.Set(CaptureRequest.ColorCorrectionMode!, (int)ColorCorrectionMode.HighQuality);
                 stillRequest.Set(CaptureRequest.ControlVideoStabilizationMode!, (int)ControlVideoStabilizationMode.Off);
 
-                // Signal that the next image is the real still capture
                 _service._readyToCapture = true;
 
                 _session.Capture(
                     stillRequest.Build(),
                     new CameraCaptureCallbackImpl(() =>
-                        _service._logger.Information("High-quality capture completed.")),
+                    {
+                        _service._logger.Information("High-quality capture completed.");
+                    }),
                     _service._backgroundHandler
                 );
             }
@@ -2227,6 +2398,7 @@ void main() {
             {
                 _service._logger.Error($"Still capture error: {ex.Message}");
                 _service._capturing = false;
+                _service._captureSemaphore.Release(); // Keep release in error path
             }
         }
     }

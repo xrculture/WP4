@@ -2,6 +2,7 @@ using ARGuidanceMAUI.Models;
 using ARGuidanceMAUI.Services;
 using ARGuidanceMAUI.Views;
 using System.IO;
+using Microsoft.Extensions.Logging;
 
 #if ANDROID
 using Android.Content;
@@ -19,15 +20,17 @@ namespace ARGuidanceMAUI.Pages;
 public class ArCapturePage : ContentPage
 {
     private readonly IArPlatformService _ar;
+    private readonly ILogger<ArCapturePage> _logger;
     private readonly DebugHudDrawable _hud = new();
     private readonly ArrowOverlayDrawable _arrowDrawable = new();
     private readonly FeaturePointsDrawable _featurePointsDrawable = new();
     private GraphicsView _hudGraphicsView;
     private GraphicsView _featurePointsGraphicsView;
 
-    public ArCapturePage(IArPlatformService arService)
+    public ArCapturePage(IArPlatformService arService, ILogger<ArCapturePage> logger)
     {
         _ar = arService;
+        _logger = logger;
 
         // HUD graphics view (transparent overlay)
         _hudGraphicsView = new GraphicsView
@@ -89,15 +92,33 @@ public class ArCapturePage : ContentPage
         };
 
 #if ANDROID
-        _ar.CaptureReady += async (pkg)  =>
-        {
-            await SaveImageToPicturesAsync(pkg.JpegBytes, $"{pkg.FileBaseName}.jpg", _ar.CurrentProjectFolder);
-        };
-#elif IOS
         _ar.CaptureReady += async (pkg) =>
         {
-            await SaveImageToPhotosAsync(pkg.JpegBytes, $"{pkg.FileBaseName}.jpg", _ar.CurrentProjectFolder);
+            try
+            {
+                _logger.LogInformation("CaptureReady event fired. FileName: {FileName}, BytesLength: {Length}, ProjectFolder: {Folder}",
+                    pkg.FileBaseName, pkg.JpegBytes?.Length ?? 0, _ar.CurrentProjectFolder);
+
+                if (string.IsNullOrEmpty(_ar.CurrentProjectFolder))
+                {
+                    _logger.LogError("CurrentProjectFolder is empty!");
+                    return;
+                }
+
+                await SaveImageToPicturesAsync(_logger, pkg.JpegBytes, $"{pkg.FileBaseName}.jpg", _ar.CurrentProjectFolder);
+
+                _logger.LogInformation("SaveImageToPicturesAsync returned successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in CaptureReady event handler");
+            }
         };
+#elif IOS
+_ar.CaptureReady += async (pkg) =>
+{
+    await SaveImageToPhotosAsync(pkg.JpegBytes, $"{pkg.FileBaseName}.jpg", _ar.CurrentProjectFolder);
+};
 #endif
         // Build overlay grid and place children via Grid attached properties
         var overlay = new Grid
@@ -140,28 +161,88 @@ public class ArCapturePage : ContentPage
 
 #if ANDROID
     // Save JPEG bytes to specific project folder using MediaStore
-    public static async Task SaveImageToPicturesAsync(byte[]? jpegBytes, string fileName, string projectFolder)
+    public static async Task SaveImageToPicturesAsync(ILogger logger, byte[]? jpegBytes, string fileName, string projectFolder)
     {
-        var context = Android.App.Application.Context;
-        var values = new ContentValues();
-        values.Put(MediaStore.Images.Media.InterfaceConsts.DisplayName, fileName);
-        values.Put(MediaStore.Images.Media.InterfaceConsts.MimeType, "image/jpeg");
-
-        var imagePath = projectFolder.Replace("Documents/", "Pictures/");
-        values.Put(MediaStore.Images.Media.InterfaceConsts.RelativePath, imagePath);
-
-        var uri = context.ContentResolver?.Insert(MediaStore.Images.Media.ExternalContentUri!, values);
-        if (uri != null)
+        Stream? stream = null;
+        try
         {
-            using var stream = context.ContentResolver?.OpenOutputStream(uri);
-            if (stream != null)
+            logger?.LogInformation("SaveImageToPicturesAsync START: {FileName}", fileName);
+
+            if (jpegBytes == null || jpegBytes.Length == 0)
             {
-                await stream.WriteAsync(jpegBytes, 0, jpegBytes.Length);
-                await stream.FlushAsync();
+                logger?.LogWarning("SaveImageToPicturesAsync: jpegBytes is null or empty for {FileName}", fileName);
+                return;
+            }
+
+            logger?.LogInformation("Image data OK: {FileName}, Size: {Size} bytes, ProjectFolder: {Folder}",
+                fileName, jpegBytes.Length, projectFolder);
+
+            var context = Android.App.Application.Context;
+            if (context == null)
+            {
+                logger?.LogError("Android Context is null!");
+                return;
+            }
+
+            if (context.ContentResolver == null)
+            {
+                logger?.LogError("ContentResolver is null!");
+                return;
+            }
+
+            var values = new ContentValues();
+            values.Put(MediaStore.Images.Media.InterfaceConsts.DisplayName, fileName);
+            values.Put(MediaStore.Images.Media.InterfaceConsts.MimeType, "image/jpeg");
+
+            var imagePath = projectFolder.Replace("Documents/", "Pictures/");
+            values.Put(MediaStore.Images.Media.InterfaceConsts.RelativePath, imagePath);
+
+            logger?.LogInformation("Inserting into MediaStore with path: {Path}", imagePath);
+
+            var uri = context.ContentResolver.Insert(MediaStore.Images.Media.ExternalContentUri!, values);
+            if (uri != null)
+            {
+                logger?.LogInformation("MediaStore URI created: {Uri}", uri);
+
+                stream = context.ContentResolver.OpenOutputStream(uri);
+                if (stream != null)
+                {
+                    logger?.LogInformation("Output stream opened, writing {Size} bytes...", jpegBytes.Length);
+
+                    await stream.WriteAsync(jpegBytes, 0, jpegBytes.Length);
+                    await stream.FlushAsync();
+
+                    logger?.LogInformation("Image saved successfully: {FileName} at {Uri}", fileName, uri);
+                }
+                else
+                {
+                    logger?.LogWarning("Failed to open output stream for: {FileName}", fileName);
+                }
+            }
+            else
+            {
+                logger?.LogWarning("Failed to insert into MediaStore for: {FileName}. Check permissions!", fileName);
             }
         }
-
-        jpegBytes = null;
+        catch (Exception ex)
+        {
+            logger?.LogError(ex, "Error saving image: {FileName}", fileName);
+        }
+        finally
+        {
+            if (stream != null)
+            {
+                try
+                {
+                    await stream.DisposeAsync();
+                    logger?.LogInformation("Stream disposed");
+                }
+                catch (Exception ex)
+                {
+                    logger?.LogWarning(ex, "Error disposing stream");
+                }
+            }
+        }
     }
 #elif IOS
     // Save JPEG bytes to Photos library for iOS
@@ -223,7 +304,7 @@ public class ArCapturePage : ContentPage
         }
         catch (Exception ex)
         {
-            await DisplayAlert("Error", $"Failed to open options: {ex.Message}", "OK");
+            _logger.LogError(ex, "Failed to open options");
         }
     }
 }
