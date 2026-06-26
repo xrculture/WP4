@@ -1226,6 +1226,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
     public void Start()
     {
+        RequestBatteryOptimizationExemption();
         _ = StartAsync();
     }
 
@@ -1358,6 +1359,30 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             status = await Permissions.RequestAsync<Permissions.StorageWrite>();
         }
         return status == PermissionStatus.Granted;
+    }
+
+    private void RequestBatteryOptimizationExemption()
+    {
+        try
+        {
+            if (Build.VERSION.SdkInt >= BuildVersionCodes.M)
+            {
+                var powerManager = _ctx.GetSystemService(Context.PowerService) as PowerManager;
+                var packageName = _ctx.PackageName;
+
+                if (powerManager != null && !powerManager.IsIgnoringBatteryOptimizations(packageName))
+                {
+                    var intent = new Intent(global::Android.Provider.Settings.ActionRequestIgnoreBatteryOptimizations);
+                    intent.SetData(global::Android.Net.Uri.Parse($"package:{packageName}"));
+                    intent.SetFlags(ActivityFlags.NewTask);
+                    _ctx.StartActivity(intent);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Warning(ex, "Could not request battery optimization exemption");
+        }
     }
 
     public void Stop()

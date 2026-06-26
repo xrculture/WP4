@@ -7,6 +7,11 @@
 	<uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 	<uses-permission android:name="android.permission.MANAGE_MEDIA" />
 	<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+	<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+	<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+	<uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+	<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 	<uses-feature android:name="android.hardware.camera.ar" android:required="true" />
 	<uses-feature android:name="android.hardware.camera" android:required="true" />
 	<uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
@@ -17,5 +22,8 @@
         android:usesCleartextTraffic="true"
         android:hardwareAccelerated="true">
 		<meta-data android:name="com.google.ar.core" android:value="required" />
+		<service android:name="arguidancemaui.platforms.android.ArCaptureService"
+                 android:foregroundServiceType="camera"
+                 android:exported="false" />
 	</application>
 </manifest>
