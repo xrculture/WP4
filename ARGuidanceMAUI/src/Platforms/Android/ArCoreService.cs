@@ -1306,15 +1306,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                     return;
                 }
 
-                var config = new Config(_session);
-                config.SetUpdateMode(Config.UpdateMode.LatestCameraImage);
-                config.SetFocusMode(Config.FocusMode.Auto);
-                config.SetPlaneFindingMode(Config.PlaneFindingMode.HorizontalAndVertical);
-                config.SetDepthMode(Config.DepthMode.Automatic);
-                config.SetLightEstimationMode(Config.LightEstimationMode.EnvironmentalHdr);
-                _session?.Configure(config);
-
-                _logger.Information("ARCore session configured successfully.");
+                CreateSession();
 
                 StartBackgroundThread();
             }
@@ -1338,6 +1330,29 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         {
             _logger.Error(e, "Error starting AR session.");
             GuidanceUpdated?.Invoke(new GuidanceState { Hint = $"Error starting AR: {e.Message}" });
+        }
+    }
+
+    private void CreateSession()
+    {
+        try
+        {
+            var config = new Config(_session);
+
+            // Reduce depth and feature tracking for better performance
+            config.SetUpdateMode(Config.UpdateMode.LatestCameraImage); // Already good
+            config.SetFocusMode(Config.FocusMode.Auto); // Auto focus
+            config.SetPlaneFindingMode(Config.PlaneFindingMode.Disabled); // Disable planes if not needed
+            config.SetLightEstimationMode(Config.LightEstimationMode.Disabled); // Disable light estimation
+            config.SetDepthMode(Config.DepthMode.Disabled); // Disable depth if not needed
+
+            _session.Configure(config);
+
+            _logger.Information("ARCore session configured for performance");
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error configuring ARCore session");
         }
     }
 
@@ -1398,6 +1413,8 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         }
     }
 
+    private DateTime _lastCaptureTime = DateTime.MinValue;
+
     public async void RequestCapture()
     {
         if (!_cameraTracking)
@@ -1431,6 +1448,15 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             return;
         }
 
+        // Add minimum delay between captures to reduce CPU/battery load
+        var timeSinceLastCapture = DateTime.Now - _lastCaptureTime;
+        if (timeSinceLastCapture.TotalMilliseconds < 2000) // 2 second minimum
+        {
+            _logger.Information("Too soon since last capture. Please wait {Remaining}ms.",
+                (int)(2000 - timeSinceLastCapture.TotalMilliseconds));
+            return;
+        }
+
         // Use semaphore to prevent concurrent captures
         if (!await _captureSemaphore.WaitAsync(0))
         {
@@ -1438,6 +1464,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             return;
         }
 
+        _lastCaptureTime = DateTime.Now; // Record capture time
         _logger.Information("Semaphore acquired, starting capture...");
 
         try
@@ -1551,6 +1578,8 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
             if (_capturing)
             {
+                // Reduce ARCore updates during capture to save CPU
+                Thread.Sleep(50); // Throttle to ~20 FPS during capture
                 GuidanceUpdated?.Invoke(new GuidanceState { Hint = "Capturing..." });
                 return;
             }
@@ -2209,24 +2238,43 @@ void main() {
 
                     if (sizes != null && sizes.Length > 0)
                     {
-                        var largestSize = sizes.OrderByDescending(s => s.Width * s.Height).First();
-                        // Limit to 8MP for memory-constrained devices
-                        if (largestSize.Width * largestSize.Height > 8_000_000)
+                        // Target 4MP instead of 8MP for better performance
+                        var targetSize = sizes.Where(s => s.Width * s.Height <= 4_000_000 && s.Width * s.Height >= 2_000_000)
+                            .OrderByDescending(s => s.Width * s.Height)
+                            .FirstOrDefault();
+
+                        if (targetSize != null)
                         {
-                            largestSize = sizes.Where(s => s.Width * s.Height <= 8_000_000)
-                                .OrderByDescending(s => s.Width * s.Height)
-                                .FirstOrDefault() ?? largestSize;
+                            _cameraWidth = targetSize.Width;
+                            _cameraHeight = targetSize.Height;
                         }
-                        _cameraWidth = largestSize.Width;
-                        _cameraHeight = largestSize.Height;
-                        _logger.Information("Camera resolution detected: {Width}x{Height}", _cameraWidth, _cameraHeight);
+                        else
+                        {
+                            // If no 4MP size, use 2-4MP range or smallest available
+                            targetSize = sizes.Where(s => s.Width * s.Height <= 4_000_000)
+                                .OrderByDescending(s => s.Width * s.Height)
+                                .FirstOrDefault();
+
+                            if (targetSize != null)
+                            {
+                                _cameraWidth = targetSize.Width;
+                                _cameraHeight = targetSize.Height;
+                            }
+                        }
+
+                        _logger.Information("Camera resolution set to: {Width}x{Height} (~{MP:F1}MP)",
+                            _cameraWidth, _cameraHeight, (_cameraWidth * _cameraHeight) / 1_000_000.0);
                     }
                 }
             }
         }
         catch (Exception ex)
         {
-            _logger.Error(ex, "Could not detect camera capabilities, using defaults.");
+            // Conservative fallback
+            _cameraWidth = 2560;
+            _cameraHeight = 1920;
+            _logger.Error(ex, "Could not detect camera capabilities, using conservative defaults: {Width}x{Height}",
+                _cameraWidth, _cameraHeight);
         }
     }
 
@@ -2425,11 +2473,14 @@ void main() {
                 stillRequest.Set(CaptureRequest.ControlAwbMode!, (int)ControlAwbMode.Auto);
                 stillRequest.Set(CaptureRequest.ControlMode!, (int)ControlMode.Auto);
                 stillRequest.Set(CaptureRequest.ControlCaptureIntent!, (int)ControlCaptureIntent.StillCapture);
-                stillRequest.Set(CaptureRequest.JpegQuality!, (sbyte)100);
+                stillRequest.Set(CaptureRequest.JpegQuality!, (sbyte)85);
                 stillRequest.Set(CaptureRequest.JpegOrientation!, _service.GetJpegOrientation());
-                stillRequest.Set(CaptureRequest.NoiseReductionMode!, (int)NoiseReductionMode.HighQuality);
-                stillRequest.Set(CaptureRequest.EdgeMode!, (int)EdgeMode.HighQuality);
-                stillRequest.Set(CaptureRequest.ColorCorrectionMode!, (int)ColorCorrectionMode.HighQuality);
+                // stillRequest.Set(CaptureRequest.NoiseReductionMode!, (int)NoiseReductionMode.HighQuality);
+                // stillRequest.Set(CaptureRequest.EdgeMode!, (int)EdgeMode.HighQuality);
+                // stillRequest.Set(CaptureRequest.ColorCorrectionMode!, (int)ColorCorrectionMode.HighQuality);
+                stillRequest.Set(CaptureRequest.NoiseReductionMode!, (int)NoiseReductionMode.Fast);
+                stillRequest.Set(CaptureRequest.EdgeMode!, (int)EdgeMode.Fast);
+                stillRequest.Set(CaptureRequest.ColorCorrectionMode!, (int)ColorCorrectionMode.Fast);
                 stillRequest.Set(CaptureRequest.ControlVideoStabilizationMode!, (int)ControlVideoStabilizationMode.Off);
 
                 _service._readyToCapture = true;
@@ -2447,7 +2498,7 @@ void main() {
             {
                 _service._logger.Error($"Still capture error: {ex.Message}");
                 _service._capturing = false;
-                _service._captureSemaphore.Release(); // Keep release in error path
+                _service._captureSemaphore.Release();
             }
         }
     }
