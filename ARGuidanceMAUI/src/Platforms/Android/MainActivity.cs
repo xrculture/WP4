@@ -14,8 +14,39 @@ namespace ARGuidanceMAUI.Platforms.Android
         {
             base.OnCreate(savedInstanceState);
 
+            // Keep screen on to prevent MIUI power management
+            Window?.AddFlags(global::Android.Views.WindowManagerFlags.KeepScreenOn);
+
+            // Request battery optimization exemption for MIUI
+            RequestBatteryOptimizationExemption();
+
             // Start foreground service to prevent MIUI from killing the app
             StartForegroundService();
+        }
+
+        private void RequestBatteryOptimizationExemption()
+        {
+            try
+            {
+                if (Build.VERSION.SdkInt >= BuildVersionCodes.M)
+                {
+                    var powerManager = GetSystemService(PowerService) as PowerManager;
+                    var packageName = PackageName;
+
+                    if (powerManager != null && !powerManager.IsIgnoringBatteryOptimizations(packageName))
+                    {
+                        var intent = new Intent(global::Android.Provider.Settings.ActionRequestIgnoreBatteryOptimizations);
+                        intent.SetData(global::Android.Net.Uri.Parse($"package:{packageName}"));
+                        StartActivity(intent);
+
+                        System.Diagnostics.Debug.WriteLine("Requesting battery optimization exemption");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error requesting battery exemption: {ex.Message}");
+            }
         }
 
         private void StartForegroundService()

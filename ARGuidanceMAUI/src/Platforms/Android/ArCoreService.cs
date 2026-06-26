@@ -1227,7 +1227,6 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
     public void Start()
     {
-        RequestBatteryOptimizationExemption();
         _ = StartAsync();
     }
 
@@ -1397,30 +1396,6 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             status = await Permissions.RequestAsync<Permissions.StorageWrite>();
         }
         return status == PermissionStatus.Granted;
-    }
-
-    private void RequestBatteryOptimizationExemption()
-    {
-        try
-        {
-            if (Build.VERSION.SdkInt >= BuildVersionCodes.M)
-            {
-                var powerManager = _ctx.GetSystemService(Context.PowerService) as PowerManager;
-                var packageName = _ctx.PackageName;
-
-                if (powerManager != null && !powerManager.IsIgnoringBatteryOptimizations(packageName))
-                {
-                    var intent = new Intent(global::Android.Provider.Settings.ActionRequestIgnoreBatteryOptimizations);
-                    intent.SetData(global::Android.Net.Uri.Parse($"package:{packageName}"));
-                    intent.SetFlags(ActivityFlags.NewTask);
-                    _ctx.StartActivity(intent);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.Warning(ex, "Could not request battery optimization exemption");
-        }
     }
 
     public void Stop()
@@ -2261,8 +2236,8 @@ void main() {
 
                     if (sizes != null && sizes.Length > 0)
                     {
-                        // Target 4MP instead of 8MP for better performance
-                        var targetSize = sizes.Where(s => s.Width * s.Height <= 4_000_000 && s.Width * s.Height >= 2_000_000)
+                        // Target 2MP
+                        var targetSize = sizes.Where(s => s.Width * s.Height <= 2_000_000)
                             .OrderByDescending(s => s.Width * s.Height)
                             .FirstOrDefault();
 
@@ -2273,9 +2248,8 @@ void main() {
                         }
                         else
                         {
-                            // If no 4MP size, use 2-4MP range or smallest available
-                            targetSize = sizes.Where(s => s.Width * s.Height <= 4_000_000)
-                                .OrderByDescending(s => s.Width * s.Height)
+                            // If no 2MP size, use smallest available
+                            targetSize = sizes.OrderByDescending(s => s.Width * s.Height)
                                 .FirstOrDefault();
 
                             if (targetSize != null)
