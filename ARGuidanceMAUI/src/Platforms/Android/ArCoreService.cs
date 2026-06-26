@@ -14,6 +14,7 @@ using Google.AR.Core;
 using Google.AR.Core.Exceptions;
 using Java.Net;
 using Java.Nio;
+using Java.Util;
 using Javax.Microedition.Khronos.Opengles; // OpenGL ES + EGL types (for IGL10, EGLConfig)
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
@@ -1337,16 +1338,38 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
     {
         try
         {
+            // First configure basic settings
             var config = new Config(_session);
+            config.SetUpdateMode(Config.UpdateMode.LatestCameraImage);
+            config.SetFocusMode(Config.FocusMode.Auto);
+            config.SetPlaneFindingMode(Config.PlaneFindingMode.Disabled);
+            config.SetLightEstimationMode(Config.LightEstimationMode.Disabled);
+            config.SetDepthMode(Config.DepthMode.Disabled);
 
-            // Reduce depth and feature tracking for better performance
-            config.SetUpdateMode(Config.UpdateMode.LatestCameraImage); // Already good
-            config.SetFocusMode(Config.FocusMode.Auto); // Auto focus
-            config.SetPlaneFindingMode(Config.PlaneFindingMode.Disabled); // Disable planes if not needed
-            config.SetLightEstimationMode(Config.LightEstimationMode.Disabled); // Disable light estimation
-            config.SetDepthMode(Config.DepthMode.Disabled); // Disable depth if not needed
-
+            // Apply basic config first
             _session.Configure(config);
+
+            // Then select camera config separately
+            var filter = new CameraConfigFilter(_session);
+            filter.SetTargetFps(EnumSet.Of(CameraConfig.TargetFps.TargetFps30)); // 30 FPS max
+            filter.SetFacingDirection(CameraConfig.FacingDirection.Back);
+
+            var cameraConfigList = _session.GetSupportedCameraConfigs(filter);
+            if (cameraConfigList != null && cameraConfigList.Count > 0)
+            {
+                // Select the lowest resolution camera config for better performance
+                var lowestResConfig = cameraConfigList
+                    .OrderBy(c => c.ImageSize.Width * c.ImageSize.Height)
+                    .First();
+
+                // Set camera config on the SESSION, not the Config object
+                _session.CameraConfig = lowestResConfig;
+
+                _logger.Information("ARCore camera config: {Width}x{Height} @ {Fps}fps",
+                    lowestResConfig.ImageSize.Width,
+                    lowestResConfig.ImageSize.Height,
+                    lowestResConfig.FpsRange);
+            }
 
             _logger.Information("ARCore session configured for performance");
         }
