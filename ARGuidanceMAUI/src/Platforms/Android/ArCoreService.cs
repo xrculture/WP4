@@ -93,6 +93,11 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         _ctx = global::Android.App.Application.Context!;
         _logger = Log.Logger.ForContext<ArCoreService>();
         _3DReconstructionServerUrl = "http://xrculture.rdf.bg:30026/";
+        
+        LogDeviceInfo();
+        LogMemoryUsage();
+        LogBatteryAndThermalInfo();
+
         DetectCameraCapabilities();
     }
 
@@ -2065,10 +2070,8 @@ void main() {
             _yaws.Add(_currentYaw);
             _captures++;
 
-            if (_captures % 5 == 0)
-            {
-                LogMemoryUsage();
-            }
+            LogMemoryUsage();
+            LogBatteryAndThermalInfo();
         }
         catch (Exception ex)
         {
@@ -2207,6 +2210,118 @@ void main() {
         }
     }
 
+    private void LogBatteryAndThermalInfo()
+    {
+        try
+        {
+            var context = global::Android.App.Application.Context;
+
+            // Battery Information
+            var batteryIntent = context.RegisterReceiver(null, new IntentFilter(Intent.ActionBatteryChanged));
+            if (batteryIntent != null)
+            {
+                // Battery level
+                int level = batteryIntent.GetIntExtra(BatteryManager.ExtraLevel, -1);
+                int scale = batteryIntent.GetIntExtra(BatteryManager.ExtraScale, -1);
+                float batteryPct = (level / (float)scale) * 100;
+
+                // Battery status
+                int status = batteryIntent.GetIntExtra(BatteryManager.ExtraStatus, -1);
+                bool isCharging = status == (int)BatteryStatus.Charging ||
+                                 status == (int)BatteryStatus.Full;
+
+                // Battery temperature (in tenths of degrees Celsius)
+                int temperature = batteryIntent.GetIntExtra(BatteryManager.ExtraTemperature, -1);
+                float batteryTemp = temperature / 10.0f;
+
+                // Battery voltage
+                int voltage = batteryIntent.GetIntExtra(BatteryManager.ExtraVoltage, -1);
+
+                // Battery health
+                int health = batteryIntent.GetIntExtra(BatteryManager.ExtraHealth, -1);
+                string healthStatus = health switch
+                {
+                    (int)BatteryHealth.Good => "Good",
+                    (int)BatteryHealth.Overheat => "Overheat",
+                    (int)BatteryHealth.Dead => "Dead",
+                    (int)BatteryHealth.OverVoltage => "OverVoltage",
+                    (int)BatteryHealth.Cold => "Cold",
+                    _ => "Unknown"
+                };
+
+                _logger.Information("Battery: {Level:F1}% | Temp: {Temp:F1}°C | Voltage: {Voltage}mV | Health: {Health} | Charging: {Charging}",
+                    batteryPct, batteryTemp, voltage, healthStatus, isCharging);
+
+                // Warnings
+                if (batteryTemp > 40.0f)
+                {
+                    _logger.Warning("Battery temperature high: {Temp:F1}°C", batteryTemp);
+                }
+
+                if (batteryPct < 15.0f && !isCharging)
+                {
+                    _logger.Warning("Battery level low: {Level:F1}%", batteryPct);
+                }
+            }
+
+            // Power Manager information
+            var powerManager = context.GetSystemService(Context.PowerService) as PowerManager;
+            if (powerManager != null)
+            {
+                bool isPowerSaveMode = powerManager.IsPowerSaveMode;
+                if (isPowerSaveMode)
+                {
+                    _logger.Information("Device in Power Save Mode");
+                }
+
+                // Check if device is in interactive mode
+                bool isInteractive = powerManager.IsInteractive;
+                _logger.Information("Device Interactive: {Interactive}", isInteractive);
+
+                // Thermal status (Android 9.0+) - using reflection to access if available
+                if (global::Android.OS.Build.VERSION.SdkInt >= global::Android.OS.BuildVersionCodes.P)
+                {
+                    try
+                    {
+                        var thermalStatusMethod = powerManager.Class.GetMethod("getCurrentThermalStatus");
+                        if (thermalStatusMethod != null)
+                        {
+                            var thermalStatusObj = thermalStatusMethod.Invoke(powerManager);
+                            int thermalStatus = (int)thermalStatusObj;
+
+                            string thermalLevel = thermalStatus switch
+                            {
+                                0 => "None",
+                                1 => "Light",
+                                2 => "Moderate",
+                                3 => "Severe",
+                                4 => "Critical",
+                                5 => "Emergency",
+                                6 => "Shutdown",
+                                _ => "Unknown"
+                            };
+
+                            _logger.Information("Thermal Status: {Status}", thermalLevel);
+
+                            if (thermalStatus >= 2)
+                            {
+                                _logger.Warning("Device thermal throttling detected: {Status}", thermalLevel);
+                            }
+                        }
+                    }
+                    catch (Exception thermalEx)
+                    {
+                        _logger.Debug(thermalEx, "Thermal status not available on this device");
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Warning(ex, "Error logging battery and thermal info.");
+        }
+    }
+
     private void CloseCameraSession()
     {
         try
@@ -2217,6 +2332,23 @@ void main() {
         catch (Exception ex)
         {
             _logger.Error(ex, "Error closing camera device.");
+        }
+    }
+
+    private void LogDeviceInfo()
+    {
+        try
+        {
+            var manufacturer = Build.Manufacturer;
+            var model = Build.Model;
+            var version = Build.VERSION.Release;
+            var sdkInt = Build.VERSION.SdkInt;
+            _logger.Information("Device Info: {Manufacturer} {Model}, Android {Version} (SDK {SdkInt})",
+                manufacturer, model, version, sdkInt);
+        }
+        catch (Exception ex)
+        {
+            _logger.Warning(ex, "Error logging device info.");
         }
     }
 
