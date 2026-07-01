@@ -14,14 +14,35 @@ namespace ARGuidanceMAUI.Platforms.Android
         {
             base.OnCreate(savedInstanceState);
 
-            // Keep screen on to prevent MIUI power management
+            // Reduce screen brightness to minimize heat generation
+            var layoutParams = Window?.Attributes;
+            if (layoutParams != null)
+            {
+                layoutParams.ScreenBrightness = 0.4f; // 40% brightness (range: 0.0 to 1.0)
+                Window?.Attributes = layoutParams;
+            }
+
+            // Keep screen on only during active use (not when app is in background)
             Window?.AddFlags(global::Android.Views.WindowManagerFlags.KeepScreenOn);
 
-            // Request battery optimization exemption for MIUI
+            // Request battery optimization exemption
             RequestBatteryOptimizationExemption();
+        }
 
-            // Start foreground service to prevent MIUI from killing the app
-            StartForegroundService();
+        protected override void OnPause()
+        {
+            base.OnPause();
+
+            // Allow screen to turn off when app is paused to save battery/reduce heat
+            Window?.ClearFlags(global::Android.Views.WindowManagerFlags.KeepScreenOn);
+        }
+
+        protected override void OnResume()
+        {
+            base.OnResume();
+
+            // Re-enable when app resumes
+            Window?.AddFlags(global::Android.Views.WindowManagerFlags.KeepScreenOn);
         }
 
         private void RequestBatteryOptimizationExemption()

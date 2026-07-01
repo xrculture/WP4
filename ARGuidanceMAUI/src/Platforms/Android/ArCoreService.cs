@@ -1420,6 +1420,21 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
     public async void RequestCapture()
     {
+        // Block captures if thermal state is Critical or worse
+        if (_currentThermalStatus >= 4)
+        {
+            _logger.Warning("Capture blocked: thermal status too high ({Status})", _currentThermalStatus);
+
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                GuidanceUpdated?.Invoke(new GuidanceState
+                {
+                    Hint = "Device too hot! Please wait for it to cool down."
+                });
+            });
+            return;
+        }
+
         if (!_cameraTracking)
         {
             _logger.Information("Cannot capture: AR tracking not ready.");
@@ -1453,12 +1468,44 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
         // Add minimum delay between captures to reduce CPU/battery load
         var timeSinceLastCapture = DateTime.Now - _lastCaptureTime;
-        if (timeSinceLastCapture.TotalMilliseconds < 2000) // 2 second minimum
+        var minInterval = _thermalThrottlingActive ? 2000 : 500;
+
+        // Add extra delay for severe thermal conditions
+        if (_currentThermalStatus >= 3)
         {
-            _logger.Information("Too soon since last capture. Please wait {Remaining}ms.",
-                (int)(2000 - timeSinceLastCapture.TotalMilliseconds));
-            return;
+            _logger.Warning("Thermal throttling active (Severe+). Adding cooldown delay...");
+
+            int extraDelayMs = _currentThermalStatus switch
+            {
+                3 => 3000,   // Severe: +3 seconds (total 5s between captures)
+                4 => 5000,   // Critical: +5 seconds (total 7s)
+                >= 5 => 8000, // Emergency+: +8 seconds (total 10s)
+                _ => 0
+            };
+
+            minInterval += extraDelayMs;
+
+            // Show warning to user for Critical+
+            if (_currentThermalStatus >= 4)
+            {
+                MainThread.BeginInvokeOnMainThread(async () =>
+                {
+                    GuidanceUpdated?.Invoke(new GuidanceState
+                    {
+                        Hint = $"Device temperature critical. Waiting {minInterval / 1000}s to cool down..."
+                    });
+                });
+            }
         }
+
+        if (timeSinceLastCapture.TotalMilliseconds < minInterval)
+        {
+            var waitTime = minInterval - (int)timeSinceLastCapture.TotalMilliseconds;
+            _logger.Information("Waiting {WaitMs}ms before next capture (thermal protection)", waitTime);
+            await Task.Delay(waitTime);
+        }
+
+        _lastCaptureTime = DateTime.Now;
 
         // Use semaphore to prevent concurrent captures
         if (!await _captureSemaphore.WaitAsync(0))
@@ -1509,8 +1556,12 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 return;
             }
 
-            // Create fresh ImageReader for each capture
-            _imageReader = ImageReader.NewInstance(_cameraWidth, _cameraHeight, ImageFormatType.Jpeg, 3);
+            // Use adaptive resolution
+            var (captureWidth, captureHeight) = GetOptimalCaptureSize();
+            _logger.Information("Using capture resolution: {Width}x{Height} (thermal status: {Status})",
+                captureWidth, captureHeight, _currentThermalStatus);
+
+            _imageReader = ImageReader.NewInstance(captureWidth, captureHeight, ImageFormatType.Jpeg, 3);
             _imageReader.SetOnImageAvailableListener(new ImageAvailableListener(OnImageAvailable), _backgroundHandler);
 
             // Add delay to ensure ARCore has released camera
@@ -1534,6 +1585,25 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             _capturing = false;
             _captureSemaphore.Release();
         }
+    }
+
+    private (int width, int height) GetOptimalCaptureSize()
+    {
+        // Default based on detected capabilities
+        if (!_thermalThrottlingActive || _currentThermalStatus < 2)
+        {
+            return (_cameraWidth, _cameraHeight);
+        }
+
+        // Reduce resolution during thermal throttling
+        return _currentThermalStatus switch
+        {
+            2 => (_cameraWidth, _cameraHeight),  // Moderate: keep detected size
+            3 => (1920, 1080),                    // Severe: reduce to Full HD
+            4 => (1280, 720),                     // Critical: reduce to HD
+            >= 5 => (960, 540),                   // Emergency+: reduce to low resolution
+            _ => (_cameraWidth, _cameraHeight)
+        };
     }
 
     // GLSurfaceView.IRenderer
@@ -1587,7 +1657,23 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 return;
             }
 
-            var frame = _session.Update();
+            // Add SessionPausedException handling
+            ArFrame frame;
+            try
+            {
+                frame = _session.Update();
+            }
+            catch (SessionPausedException)
+            {
+                // Session not ready yet, skip this frame
+                return;
+            }
+            catch (Java.Lang.IllegalStateException ex)
+            {
+                _logger.Warning(ex, "AR session not ready");
+                return;
+            }
+
             var cam = frame.Camera;
             _currentPose = cam.Pose;
 
@@ -1665,6 +1751,11 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             DebugUpdated?.Invoke(telemetry);
 
             Views.FeaturePointsDrawable.RenderFeaturePointsOpenGL(allFeaturePoints, filteredFeaturePoints, _surfaceWidth, _surfaceHeight);
+        }
+        catch (SessionPausedException)
+        {
+            // Silently ignore - session will resume on next frame
+            return;
         }
         catch (Exception e)
         {
@@ -2108,11 +2199,17 @@ void main() {
                 }
 
                 // GC every 3 captures
-                if (_captures % 3 == 0)
+                if (_captures % 3 == 0 || _thermalThrottlingActive)
                 {
                     GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
                     GC.WaitForPendingFinalizers();
                     GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
+
+                    // Force trim memory on Android
+                    if (_thermalThrottlingActive)
+                    {
+                        Java.Lang.JavaSystem.Gc();
+                    }
                 }
             }
         }
@@ -2210,75 +2307,21 @@ void main() {
         }
     }
 
+    // Тrack thermal state
+    private int _currentThermalStatus = 0;
+    private bool _thermalThrottlingActive = false;
+    private bool _thermalWarningShown = false;
+
     private void LogBatteryAndThermalInfo()
     {
         try
         {
             var context = global::Android.App.Application.Context;
-
-            // Battery Information
-            var batteryIntent = context.RegisterReceiver(null, new IntentFilter(Intent.ActionBatteryChanged));
-            if (batteryIntent != null)
-            {
-                // Battery level
-                int level = batteryIntent.GetIntExtra(BatteryManager.ExtraLevel, -1);
-                int scale = batteryIntent.GetIntExtra(BatteryManager.ExtraScale, -1);
-                float batteryPct = (level / (float)scale) * 100;
-
-                // Battery status
-                int status = batteryIntent.GetIntExtra(BatteryManager.ExtraStatus, -1);
-                bool isCharging = status == (int)BatteryStatus.Charging ||
-                                 status == (int)BatteryStatus.Full;
-
-                // Battery temperature (in tenths of degrees Celsius)
-                int temperature = batteryIntent.GetIntExtra(BatteryManager.ExtraTemperature, -1);
-                float batteryTemp = temperature / 10.0f;
-
-                // Battery voltage
-                int voltage = batteryIntent.GetIntExtra(BatteryManager.ExtraVoltage, -1);
-
-                // Battery health
-                int health = batteryIntent.GetIntExtra(BatteryManager.ExtraHealth, -1);
-                string healthStatus = health switch
-                {
-                    (int)BatteryHealth.Good => "Good",
-                    (int)BatteryHealth.Overheat => "Overheat",
-                    (int)BatteryHealth.Dead => "Dead",
-                    (int)BatteryHealth.OverVoltage => "OverVoltage",
-                    (int)BatteryHealth.Cold => "Cold",
-                    _ => "Unknown"
-                };
-
-                _logger.Information("Battery: {Level:F1}% | Temp: {Temp:F1}°C | Voltage: {Voltage}mV | Health: {Health} | Charging: {Charging}",
-                    batteryPct, batteryTemp, voltage, healthStatus, isCharging);
-
-                // Warnings
-                if (batteryTemp > 40.0f)
-                {
-                    _logger.Warning("Battery temperature high: {Temp:F1}°C", batteryTemp);
-                }
-
-                if (batteryPct < 15.0f && !isCharging)
-                {
-                    _logger.Warning("Battery level low: {Level:F1}%", batteryPct);
-                }
-            }
-
-            // Power Manager information
             var powerManager = context.GetSystemService(Context.PowerService) as PowerManager;
+
             if (powerManager != null)
             {
-                bool isPowerSaveMode = powerManager.IsPowerSaveMode;
-                if (isPowerSaveMode)
-                {
-                    _logger.Information("Device in Power Save Mode");
-                }
-
-                // Check if device is in interactive mode
-                bool isInteractive = powerManager.IsInteractive;
-                _logger.Information("Device Interactive: {Interactive}", isInteractive);
-
-                // Thermal status (Android 9.0+) - using reflection to access if available
+                // Thermal status (Android 9.0+)
                 if (global::Android.OS.Build.VERSION.SdkInt >= global::Android.OS.BuildVersionCodes.P)
                 {
                     try
@@ -2288,6 +2331,7 @@ void main() {
                         {
                             var thermalStatusObj = thermalStatusMethod.Invoke(powerManager);
                             int thermalStatus = (int)thermalStatusObj;
+                            _currentThermalStatus = thermalStatus;
 
                             string thermalLevel = thermalStatus switch
                             {
@@ -2303,9 +2347,43 @@ void main() {
 
                             _logger.Information("Thermal Status: {Status}", thermalLevel);
 
+                            // Apply throttling at Moderate or higher
                             if (thermalStatus >= 2)
                             {
-                                _logger.Warning("Device thermal throttling detected: {Status}", thermalLevel);
+                                _thermalThrottlingActive = true;
+                                _logger.Warning("Device thermal throttling detected: {Status}. Applying protective measures.", thermalLevel);
+
+                                // Force aggressive cleanup
+                                GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
+                                GC.WaitForPendingFinalizers();
+
+                                // Notify user once per session when reaching Severe or above
+                                if (thermalStatus >= 3 && !_thermalWarningShown)
+                                {
+                                    _thermalWarningShown = true;
+                                    MainThread.BeginInvokeOnMainThread(async () =>
+                                    {
+                                        try
+                                        {
+                                            if (Application.Current?.MainPage != null)
+                                            {
+                                                await Application.Current.MainPage.DisplayAlertAsync(
+                                                    "Device Temperature Warning",
+                                                    $"Your device is getting warm ({thermalLevel}). Capture speed and quality have been reduced to prevent overheating.",
+                                                    "OK");
+                                            }
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            _logger.Warning(ex, "Failed to show thermal warning dialog");
+                                        }
+                                    });
+                                }
+                            }
+                            else
+                            {
+                                _thermalThrottlingActive = false;
+                                _thermalWarningShown = false; // Reset when thermal state improves
                             }
                         }
                     }
