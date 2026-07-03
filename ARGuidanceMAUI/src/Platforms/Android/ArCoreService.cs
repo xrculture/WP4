@@ -2197,20 +2197,6 @@ void main() {
                 {
                     _logger.Warning(ex, "Error releasing semaphore");
                 }
-
-                // GC every 3 captures
-                if (_captures % 3 == 0 || _thermalThrottlingActive)
-                {
-                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
-                    GC.WaitForPendingFinalizers();
-                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
-
-                    // Force trim memory on Android
-                    if (_thermalThrottlingActive)
-                    {
-                        Java.Lang.JavaSystem.Gc();
-                    }
-                }
             }
         }
     }
@@ -2224,8 +2210,9 @@ void main() {
             {
                 try
                 {
-                    _captureSession.Close();
-                    _captureSession.Dispose();
+                    // Causes issues on some devices, so we skip explicit close/dispose
+                    //_captureSession.Close();
+                    //_captureSession.Dispose();
                 }
                 catch (Exception ex)
                 {
@@ -2242,8 +2229,9 @@ void main() {
             {
                 try
                 {
-                    _cameraDevice.Close();
-                    _cameraDevice.Dispose();
+                    // Causes issues on some devices, so we skip explicit close/dispose
+                    //_cameraDevice.Close();
+                    //_cameraDevice.Dispose();
                 }
                 catch (Exception ex)
                 {
@@ -2260,8 +2248,9 @@ void main() {
             {
                 try
                 {
-                    _imageReader.Close();
-                    _imageReader.Dispose();
+                    // Causes issues on some devices, so we skip explicit close/dispose
+                    //_imageReader.Close();
+                    //_imageReader.Dispose();
                 }
                 catch (Exception ex)
                 {
@@ -2295,9 +2284,6 @@ void main() {
                 if (percentUsed > 80)
                 {
                     _logger.Warning("Memory usage critical: {Percent:F1}%", percentUsed);
-
-                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
-                    GC.WaitForPendingFinalizers();
                 }
             }
         }
@@ -2352,10 +2338,6 @@ void main() {
                             {
                                 _thermalThrottlingActive = true;
                                 _logger.Warning("Device thermal throttling detected: {Status}. Applying protective measures.", thermalLevel);
-
-                                // Force aggressive cleanup
-                                GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
-                                GC.WaitForPendingFinalizers();
 
                                 // Notify user once per session when reaching Severe or above
                                 if (thermalStatus >= 3 && !_thermalWarningShown)
