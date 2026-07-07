@@ -27,6 +27,11 @@ namespace ARGuidanceMAUI.Platforms.Android
 
             // Request battery optimization exemption
             RequestBatteryOptimizationExemption();
+
+            // Request MIUI-specific permissions
+            //RequestMIUIPermissions();
+
+            StartForegroundService();
         }
 
         protected override void OnPause()
@@ -43,6 +48,51 @@ namespace ARGuidanceMAUI.Platforms.Android
 
             // Re-enable when app resumes
             Window?.AddFlags(global::Android.Views.WindowManagerFlags.KeepScreenOn);
+        }
+
+        private void RequestMIUIPermissions()
+        {
+            try
+            {
+                var manufacturer = global::Android.OS.Build.Manufacturer?.ToLower() ?? "";
+
+                if (manufacturer.Contains("xiaomi") || manufacturer.Contains("redmi"))
+                {
+                    System.Diagnostics.Debug.WriteLine("Detected Xiaomi/Redmi device, requesting MIUI permissions");
+
+                    // Autostart permission
+                    try
+                    {
+                        var autoStartIntent = new Intent();
+                        autoStartIntent.SetComponent(new ComponentName(
+                            "com.miui.securitycenter",
+                            "com.miui.permcenter.autostart.AutoStartManagementActivity"));
+                        StartActivity(autoStartIntent);
+                    }
+                    catch
+                    {
+                        System.Diagnostics.Debug.WriteLine("MIUI Autostart settings not available");
+                    }
+
+                    // Battery saver whitelist (more aggressive for MIUI)
+                    try
+                    {
+                        var batteryIntent = new Intent("miui.intent.action.APP_PERM_EDITOR");
+                        batteryIntent.SetClassName("com.miui.securitycenter",
+                            "com.miui.permcenter.permissions.PermissionsEditorActivity");
+                        batteryIntent.PutExtra("extra_pkgname", PackageName);
+                        StartActivity(batteryIntent);
+                    }
+                    catch
+                    {
+                        System.Diagnostics.Debug.WriteLine("MIUI Battery settings not available");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error requesting MIUI permissions: {ex.Message}");
+            }
         }
 
         private void RequestBatteryOptimizationExemption()
