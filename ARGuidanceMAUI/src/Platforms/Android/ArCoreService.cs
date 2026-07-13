@@ -8,6 +8,7 @@ using Android.OS;
 using Android.Provider;
 using Android.Runtime;
 using Android.Views;
+using Android.Widget;
 using ARGuidanceMAUI.Models;
 using ARGuidanceMAUI.Services;
 using Google.AR.Core;
@@ -24,8 +25,9 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
+using Xamarin.Google.Crypto.Tink.Shaded.Protobuf;
 using ArFrame = Google.AR.Core.Frame;
-using Image = Android.Media.Image;
+using Image = global::Android.Media.Image;
 
 namespace ARGuidanceMAUI.Platforms.Android;
 
@@ -88,17 +90,33 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
     // Logger
     private readonly Serilog.ILogger _logger;
 
+    private bool _isMediaTekDevice = false;
+    private bool _sessionInitialized = false;
+    private object _sessionLock = new object();
+
     public ArCoreService()
     {
         _ctx = global::Android.App.Application.Context!;
         _logger = Log.Logger.ForContext<ArCoreService>();
         _3DReconstructionServerUrl = "http://xrculture.rdf.bg:30026/";
-        
+
+        // Detect MediaTek early
+        _isMediaTekDevice = IsMediaTekDevice();
+
         LogDeviceInfo();
         LogMemoryUsage();
         LogBatteryAndThermalInfo();
-
         DetectCameraCapabilities();
+    }
+
+    private bool IsMediaTekDevice()
+    {
+        var manufacturer = global::Android.OS.Build.Manufacturer?.ToLowerInvariant() ?? "";
+        var hardware = global::Android.OS.Build.Hardware?.ToLowerInvariant() ?? "";
+        var soc = global::Android.OS.Build.SocManufacturer?.ToLowerInvariant() ?? "";
+
+        return manufacturer.Contains("xiaomi") &&
+               (hardware.Contains("mt") || soc.Contains("mediatek") || soc.Contains("mt"));
     }
 
     public void AttachGlView(GLSurfaceView? glView)
@@ -1277,11 +1295,11 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                     }
 
                     _logger.Information("ARCore is available. Proceeding to create session.");
-                    _logger.Information("Creating ARCore session...");
+                    //_logger.Information("Creating ARCore session...");
 
-                    _session = new Session(_ctx, [Session.Feature.SharedCamera]);
+                    //_session = new Session(_ctx, [Session.Feature.SharedCamera]);
 
-                    _logger.Information("ARCore session created successfully.");
+                    //_logger.Information("ARCore session created successfully.");
                 }
                 catch (Java.Lang.ClassNotFoundException ex)
                 {
@@ -1342,44 +1360,49 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
     {
         try
         {
-            // First configure basic settings
+            _logger.Information("Creating ARCore session...");
+
+            // CREATE SESSION FIRST
+            _session = new Session(_ctx);
+
+            // Then configure it
             var config = new Config(_session);
             config.SetUpdateMode(Config.UpdateMode.LatestCameraImage);
-            config.SetFocusMode(Config.FocusMode.Auto);
+            config.SetFocusMode(/*_isMediaTekDevice ? Config.FocusMode.Fixed : */Config.FocusMode.Auto);
             config.SetPlaneFindingMode(Config.PlaneFindingMode.Disabled);
             config.SetLightEstimationMode(Config.LightEstimationMode.Disabled);
             config.SetDepthMode(Config.DepthMode.Disabled);
+            config.SetCloudAnchorMode(Config.CloudAnchorMode.Disabled);
 
-            // Apply basic config first
+            // Apply config
             _session.Configure(config);
 
-            // Then select camera config separately
+            // Select camera config
             var filter = new CameraConfigFilter(_session);
-            filter.SetTargetFps(EnumSet.Of(CameraConfig.TargetFps.TargetFps30)); // 30 FPS max
+            filter.SetTargetFps(EnumSet.Of(CameraConfig.TargetFps.TargetFps30));
             filter.SetFacingDirection(CameraConfig.FacingDirection.Back);
 
             var cameraConfigList = _session.GetSupportedCameraConfigs(filter);
             if (cameraConfigList != null && cameraConfigList.Count > 0)
             {
-                // Select the lowest resolution camera config for better performance
-                var lowestResConfig = cameraConfigList
+                var highestResConfig = cameraConfigList
                     .OrderBy(c => c.ImageSize.Width * c.ImageSize.Height)
-                    .First();
+                    .Last();
 
-                // Set camera config on the SESSION, not the Config object
-                _session.CameraConfig = lowestResConfig;
+                _session.CameraConfig = highestResConfig;
 
                 _logger.Information("ARCore camera config: {Width}x{Height} @ {Fps}fps",
-                    lowestResConfig.ImageSize.Width,
-                    lowestResConfig.ImageSize.Height,
-                    lowestResConfig.FpsRange);
+                    highestResConfig.ImageSize.Width,
+                    highestResConfig.ImageSize.Height,
+                    highestResConfig.FpsRange);
             }
 
-            _logger.Information("ARCore session configured for performance");
+            _logger.Information("✓ ARCore session created successfully");
         }
         catch (Exception ex)
         {
-            _logger.Error(ex, "Error configuring ARCore session");
+            _logger.Error(ex, "Failed to create ARCore session");
+            throw;
         }
     }
 
@@ -1420,6 +1443,8 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
     public async void RequestCapture()
     {
+        await CaptureHighResPhoto();
+        return;
         // Block captures if thermal state is Critical or worse
         if (_currentThermalStatus >= 4)
         {
@@ -1524,8 +1549,10 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             // Ensure previous resources are cleaned up
             CleanupCameraResources();
 
-            // Small delay to ensure cleanup is complete
-            await Task.Delay(50);
+            // **INCREASE delay for MIUI cloud camera service**
+            int cleanupDelay = _isMediaTekDevice ? 600 : 50; // 600ms for MIUI, 50ms for others
+            _logger.Information("Waiting {DelayMs}ms for camera cleanup...", cleanupDelay);
+            await Task.Delay(cleanupDelay);
 
             var cameraManager = _ctx.GetSystemService(Context.CameraService) as CameraManager;
             if (cameraManager == null)
@@ -1564,11 +1591,25 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             _imageReader = ImageReader.NewInstance(captureWidth, captureHeight, ImageFormatType.Jpeg, 3);
             _imageReader.SetOnImageAvailableListener(new ImageAvailableListener(OnImageAvailable), _backgroundHandler);
 
-            // Add delay to ensure ARCore has released camera
-            _backgroundHandler?.PostDelayed(() =>
+            // **INCREASE delay for MIUI cloud camera service**
+            int openDelay = _isMediaTekDevice ? 800 : 200; // 800ms for MIUI, 200ms for others
+            _logger.Information("Waiting {DelayMs}ms before opening camera...", openDelay);
+
+            _backgroundHandler?.PostDelayed(async () =>
             {
                 try
                 {
+                    if (_isMediaTekDevice)
+                    {
+                        var isAvailable = await WaitForCameraAvailability(cameraManager, cameraId, 2000);
+                        if (!isAvailable)
+                        {
+                            _logger.Error("Camera not available, aborting capture");
+                            _capturing = false;
+                            _captureSemaphore.Release();
+                            return;
+                        }
+                    }
                     cameraManager.OpenCamera(cameraId, new CameraStateCallback(this), _backgroundHandler);
                 }
                 catch (Exception ex)
@@ -1577,7 +1618,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                     _logger.Error(ex, "Failed to open camera.");
                     _captureSemaphore.Release();
                 }
-            }, 200);
+            }, openDelay);
         }
         catch (Exception ex)
         {
@@ -1586,6 +1627,222 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             _captureSemaphore.Release();
         }
     }
+
+    // Add these fields at the top of the class (around line 75):
+    private CameraManager.AvailabilityCallback? _cameraAvailabilityCallback;
+    private TaskCompletionSource<bool>? _cameraAvailableTcs;
+    private string? _waitingForCameraId;
+
+    // Replace the existing WaitForCameraAvailability method (around line 1629):
+    private async Task<bool> WaitForCameraAvailability(CameraManager cameraManager, string cameraId, int maxWaitMs = 3000)
+    {
+        _logger.Information("Waiting for camera {CameraId} to become available via callback...", cameraId);
+
+        _waitingForCameraId = cameraId;
+        _cameraAvailableTcs = new TaskCompletionSource<bool>();
+
+        // Register callback if not already registered
+        if (_cameraAvailabilityCallback == null)
+        {
+            _cameraAvailabilityCallback = new CameraAvailabilityCallbackHandler(this);
+            cameraManager.RegisterAvailabilityCallback(_cameraAvailabilityCallback, _backgroundHandler);
+            _logger.Information("Registered camera availability callback");
+        }
+
+        // Wait for callback or timeout
+        var timeoutTask = Task.Delay(maxWaitMs);
+        var completedTask = await Task.WhenAny(
+            _cameraAvailableTcs.Task,
+            timeoutTask
+        );
+
+        if (completedTask == _cameraAvailableTcs.Task)
+        {
+            _logger.Information("✓ Camera {CameraId} became available", cameraId);
+            return true;
+        }
+        else
+        {
+            _logger.Warning("⏱ Timeout waiting for camera {CameraId} (waited {MaxWaitMs}ms)", cameraId, maxWaitMs);
+
+            // Fallback: try retry logic
+            _logger.Information("Falling back to retry logic...");
+            return await TryOpenCameraWithRetry(cameraManager, cameraId);
+        }
+    }
+
+    // Add this helper method for retry fallback:
+    private async Task<bool> TryOpenCameraWithRetry(CameraManager cameraManager, string cameraId, int maxRetries = 3)
+    {
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
+        {
+            try
+            {
+                _logger.Information("Retry attempt {Attempt}/{MaxRetries} for camera {CameraId}", attempt, maxRetries, cameraId);
+
+                // Try to get characteristics
+                var characteristics = cameraManager.GetCameraCharacteristics(cameraId);
+                if (characteristics != null)
+                {
+                    _logger.Information("✓ Camera characteristics available on attempt {Attempt}", attempt);
+                    await Task.Delay(200); // Small extra delay for safety
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Retry attempt {Attempt} failed", attempt);
+            }
+
+            if (attempt < maxRetries)
+            {
+                int delay = 300 * attempt; // 300ms, 600ms, 900ms
+                _logger.Information("Waiting {DelayMs}ms before next retry...", delay);
+                await Task.Delay(delay);
+            }
+        }
+
+        return false;
+    }
+
+    // Add the callback handler class at the end of the ArCoreService class (before the last closing brace):
+    private class CameraAvailabilityCallbackHandler : CameraManager.AvailabilityCallback
+    {
+        private readonly ArCoreService _service;
+
+        public CameraAvailabilityCallbackHandler(ArCoreService service)
+        {
+            _service = service;
+        }
+
+        public override void OnCameraAvailable(string cameraId)
+        {
+            _service._logger.Information("📷 OnCameraAvailable callback fired for camera {CameraId}", cameraId);
+
+            if (_service._waitingForCameraId == cameraId)
+            {
+                _service._cameraAvailableTcs?.TrySetResult(true);
+            }
+        }
+
+        public override void OnCameraUnavailable(string cameraId)
+        {
+            _service._logger.Information("🚫 OnCameraUnavailable callback fired for camera {CameraId}", cameraId);
+        }
+    }
+
+    // Update CleanupCameraResources to trigger the availability callback:
+    private void CleanupCameraResources()
+    {
+        try
+        {
+            // Close capture session
+            if (_captureSession != null)
+            {
+                try
+                {
+                    _captureSession.StopRepeating();
+                    _captureSession.AbortCaptures();
+                    Thread.Sleep(100); // Give time for abort
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error stopping capture session.");
+                }
+                finally
+                {
+                    _captureSession = null;
+                }
+            }
+
+            // Close camera device
+            if (_cameraDevice != null)
+            {
+                try
+                {
+                    _cameraDevice.Close(); // This should trigger OnCameraAvailable callback
+                    _logger.Information("Camera device closed - waiting for availability callback...");
+
+                    if (_isMediaTekDevice)
+                    {
+                        Thread.Sleep(300); // MIUI needs extra time
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error closing camera device.");
+                }
+                finally
+                {
+                    _cameraDevice = null;
+                }
+            }
+
+            // Close image reader
+            if (_imageReader != null)
+            {
+                try
+                {
+                    _imageReader.Close();
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error closing image reader.");
+                }
+                finally
+                {
+                    _imageReader = null;
+                }
+            }
+
+            // Resume ARCore session after Camera2 cleanup
+            try
+            {
+                if (_session != null)
+                {
+                    if (_isMediaTekDevice)
+                    {
+                        Thread.Sleep(200);
+                    }
+
+                    _session.Resume();
+                    _logger.Information("ARCore session resumed after camera cleanup");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error resuming ARCore session after cleanup");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error in CleanupCameraResources.");
+        }
+    }
+
+    // Don't forget to unregister callback on dispose:
+    //public void Dispose()
+    //{
+    //    try
+    //    {
+    //        if (_cameraAvailabilityCallback != null && _ctx != null)
+    //        {
+    //            var cameraManager = _ctx.GetSystemService(Context.CameraService) as CameraManager;
+    //            if (cameraManager != null)
+    //            {
+    //                cameraManager.UnregisterAvailabilityCallback(_cameraAvailabilityCallback);
+    //                _logger.Information("Unregistered camera availability callback");
+    //            }
+    //            _cameraAvailabilityCallback = null;
+    //        }
+    //    }
+    //    catch (Exception ex)
+    //    {
+    //        _logger.Warning(ex, "Error unregistering camera callback");
+    //    }
+
+    //    // ... rest of cleanup ...
+    //}
 
     private (int width, int height) GetOptimalCaptureSize()
     {
@@ -1609,10 +1866,133 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
     // GLSurfaceView.IRenderer
     public void OnSurfaceCreated(IGL10? gl, Javax.Microedition.Khronos.Egl.EGLConfig? config)
     {
-        _cameraTextureId = CreateCameraTextureExternal();
-        _session?.SetCameraTextureName(_cameraTextureId);
+        _logger.Information("OnSurfaceCreated called");
 
-        InitBackgroundRenderer();
+        // Initialize GL resources synchronously
+        InitializeGLResources();
+
+        // Create camera texture if session exists
+        if (_session != null && _cameraTextureId == 0)
+        {
+            int[] textures = new int[1];
+            GLES20.GlGenTextures(1, textures, 0);
+            _cameraTextureId = textures[0];
+
+            GLES20.GlBindTexture(GLES11Ext.GlTextureExternalOes, _cameraTextureId);
+            GLES20.GlTexParameteri(GLES11Ext.GlTextureExternalOes, GLES20.GlTextureMinFilter, GLES20.GlLinear);
+            GLES20.GlTexParameteri(GLES11Ext.GlTextureExternalOes, GLES20.GlTextureMagFilter, GLES20.GlLinear);
+
+            _session.SetCameraTextureName(_cameraTextureId);
+            _logger.Information("✓ Camera texture created and bound");
+        }
+    }
+
+    private async Task InitializeArCoreSessionAsync()
+    {
+        try
+        {
+            // Add delay for MediaTek HAL stabilization
+            await Task.Delay(_isMediaTekDevice ? 500 : 100);
+
+            lock (_sessionLock)
+            {
+                if (_sessionInitialized) return;
+
+                InitializeArCoreSession();
+                _sessionInitialized = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Failed to initialize ARCore session asynchronously");
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                Application.Current?.MainPage?.DisplayAlert(
+                    "Camera Error",
+                    "ARCore failed to initialize. Please restart the app.",
+                    "OK"
+                );
+            });
+        }
+    }
+
+    private void InitializeArCoreSession()
+    {
+        try
+        {
+            _logger.Information("Creating ARCore session...");
+
+            // CRITICAL FIX: Create session FIRST, then configure it
+            _session = new Session(_ctx, [Session.Feature.SharedCamera]);
+
+            // Now create config with the existing session
+            var config = new Config(_session);
+            if (_isMediaTekDevice)
+            {
+                // Reduce camera load
+                config.SetUpdateMode(Config.UpdateMode.LatestCameraImage);
+                config.SetFocusMode(Config.FocusMode.Fixed); // Avoid autofocus on problematic devices
+            }
+
+            _session.Configure(config);
+
+            // Create camera texture
+            int[] textures = new int[1];
+            GLES20.GlGenTextures(1, textures, 0);
+            _cameraTextureId = textures[0];
+
+            GLES20.GlBindTexture(GLES11Ext.GlTextureExternalOes, _cameraTextureId);
+            GLES20.GlTexParameteri(GLES11Ext.GlTextureExternalOes, GLES20.GlTextureMinFilter, GLES20.GlLinear);
+            GLES20.GlTexParameteri(GLES11Ext.GlTextureExternalOes, GLES20.GlTextureMagFilter, GLES20.GlLinear);
+
+            _session.SetCameraTextureName(_cameraTextureId);
+
+            _logger.Information("✓ ARCore session created successfully");
+        }
+        catch (UnavailableException ex)
+        {
+            _logger.Error(ex, "ARCore unavailable");
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "ARCore session creation failed");
+            throw;
+        }
+    }
+
+    private void ConfigureCameraForMediaTek()
+    {
+        if (!MainActivity.IsMediaTekHardware() || _session == null)
+            return;
+
+        try
+        {
+            var config = new Config(_session);
+
+            // Use lowest settings for MediaTek
+            var cameraConfigFilter = new CameraConfigFilter(_session);
+            cameraConfigFilter.SetTargetFps(EnumSet.Of(CameraConfig.TargetFps.TargetFps30)); // 30 FPS max
+            cameraConfigFilter.SetFacingDirection(CameraConfig.FacingDirection.Back);
+
+            var cameraConfigs = _session.GetSupportedCameraConfigs(cameraConfigFilter);
+            if (cameraConfigs.Count > 0)
+            {
+                // Pick LOWEST resolution for stability
+                var lowestConfig = cameraConfigs
+                    .OrderBy(c => c.ImageSize.Width * c.ImageSize.Height)
+                    .First();
+
+                _session.CameraConfig = lowestConfig;
+                _session.Configure(config);
+
+                _logger.Information($"MediaTek camera config: {lowestConfig.ImageSize.Width}x{lowestConfig.ImageSize.Height}");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Failed to configure camera for MediaTek");
+        }
     }
 
     public void OnSurfaceChanged(IGL10? gl, int width, int height)
@@ -1638,6 +2018,12 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
     public void OnDrawFrame(IGL10? gl)
     {
+        // Check if camera is still ready (especially important for MediaTek)
+        if (MainActivity.IsMediaTekHardware() && !MainActivity.IsCameraReady())
+        {
+            return; // Skip this frame
+        }
+
         GLES20.GlClear(GLES20.GlColorBufferBit | GLES20.GlDepthBufferBit);
 
         try
@@ -1649,15 +2035,14 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 return;
             }
 
+            // Skip if already capturing
             if (_capturing)
             {
-                // Reduce ARCore updates during capture to save CPU
-                Thread.Sleep(50); // Throttle to ~20 FPS during capture
-                GuidanceUpdated?.Invoke(new GuidanceState { Hint = "Capturing..." });
+                Thread.Sleep(50);
+                GuidanceUpdated?.Invoke(new GuidanceState { Hint = "Processing capture..." });
                 return;
             }
 
-            // Add SessionPausedException handling
             ArFrame frame;
             try
             {
@@ -1665,7 +2050,6 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             }
             catch (SessionPausedException)
             {
-                // Session not ready yet, skip this frame
                 return;
             }
             catch (Java.Lang.IllegalStateException ex)
@@ -1676,6 +2060,42 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
             var cam = frame.Camera;
             _currentPose = cam.Pose;
+
+            // **CAPTURE LOGIC - CHECK FLAG**
+            bool shouldCapture = false;
+            lock (_captureLock)
+            {
+                if (_requestCapture && !_capturing)
+                {
+                    _requestCapture = false;
+                    _capturing = true;
+                    shouldCapture = true;
+                }
+            }
+
+            if (shouldCapture)
+            {
+                // Capture synchronously on GL thread, process async
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await CaptureFromArFrameAsync(frame);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Error in capture task");
+                    }
+                    finally
+                    {
+                        lock (_captureLock)
+                        {
+                            _capturing = false;
+                        }
+                    }
+                });
+            }
+
 
             // Background
             UpdateBackgroundUv(frame);
@@ -1694,6 +2114,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             }
 
             _cameraTracking = true;
+
 
             using var pointCloud = frame.AcquirePointCloud();
             var idsBuf = pointCloud.Ids;
@@ -1764,6 +2185,272 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         }
     }
 
+    private async Task CaptureFromArFrameAsync(ArFrame frame)
+    {
+        Image? arImage = null;
+        byte[]? jpegBytes = null;
+
+        try
+        {
+            _logger.Information("Acquiring ARCore camera image...");
+
+            // Acquire image
+            arImage = frame.AcquireCameraImage();
+            if (arImage == null)
+            {
+                _logger.Warning("Could not acquire camera image from ARCore");
+                return;
+            }
+
+            _logger.Information("Converting YUV to JPEG ({Width}x{Height})...", arImage.Width, arImage.Height);
+
+            // Convert to JPEG (this reads the image data)
+            jpegBytes = ConvertYuvToJpeg(arImage);
+
+            _logger.Information("Captured ARCore image: {Size} bytes", jpegBytes.Length);
+        }
+        catch (NotSupportedException ex)
+        {
+            _logger.Warning(ex, "Image format not supported");
+            return;
+        }
+        catch (ResourceExhaustedException ex)
+        {
+            _logger.Warning(ex, "ARCore image buffer pool exhausted - capture too fast");
+            return;
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error acquiring/converting ARCore image");
+            return;
+        }
+        finally
+        {
+            // **CRITICAL: Dispose image immediately to return it to ARCore's buffer pool**
+            if (arImage != null)
+            {
+                try
+                {
+                    arImage.Close();
+                    arImage.Dispose();
+                    _logger.Information("ARCore image released");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error disposing ARCore image");
+                }
+            }
+        }
+
+        // Now process the JPEG bytes (image is already released)
+        if (jpegBytes != null && CaptureReady != null)
+        {
+            var package = new CapturePackage
+            {
+                JpegBytes = jpegBytes,
+                MetadataJson = "",
+                FileBaseName = $"cap_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}"
+            };
+
+            try
+            {
+                await Task.WhenAll(
+                    CaptureReady.GetInvocationList()
+                        .Cast<Func<CapturePackage, Task>>()
+                        .Select(handler => handler(package))
+                );
+
+                _logger.Information("Image save completed successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error in CaptureReady handler");
+            }
+        }
+
+        // Update poses
+        if (_poses.Count > 100)
+        {
+            _poses.RemoveAt(0);
+            _yaws.RemoveAt(0);
+        }
+
+        if (_currentPose != null)
+        {
+            _poses.Add(_currentPose);
+            _yaws.Add(_currentYaw);
+        }
+
+        _captures++;
+
+        LogMemoryUsage();
+        LogBatteryAndThermalInfo();
+    }
+
+    private byte[] ConvertYuvToJpeg(Image arImage)
+    {
+        int width = arImage.Width;
+        int height = arImage.Height;
+
+        var planes = arImage.GetPlanes();
+        if (planes == null || planes.Length < 3)
+        {
+            throw new NotSupportedException("ARCore image does not have required planes");
+        }
+
+        // Get all three planes
+        var yPlane = planes[0];
+        var uPlane = planes[1];
+        var vPlane = planes[2];
+
+        var yBuffer = yPlane.Buffer;
+        var uBuffer = uPlane.Buffer;
+        var vBuffer = vPlane.Buffer;
+
+        if (yBuffer == null || uBuffer == null || vBuffer == null)
+        {
+            throw new NotSupportedException("One or more plane buffers are null");
+        }
+
+        // Get plane properties
+        int yRowStride = yPlane.RowStride;
+        int uvRowStride = uPlane.RowStride;
+        int uvPixelStride = uPlane.PixelStride;
+
+        // NV21 format: YYYYYYYY VUVUVU (Y plane + interleaved VU)
+        int ySize = width * height;
+        int uvSize = width * height / 2;
+        byte[] nv21 = new byte[ySize + uvSize];
+
+        // **STEP 1: Copy Y plane**
+        yBuffer.Rewind();
+        if (yRowStride == width)
+        {
+            // No padding - direct copy
+            yBuffer.Get(nv21, 0, ySize);
+        }
+        else
+        {
+            // Has padding - copy row by row
+            for (int row = 0; row < height; row++)
+            {
+                yBuffer.Position(row * yRowStride);
+                yBuffer.Get(nv21, row * width, width);
+            }
+        }
+
+        // **STEP 2: Interleave U and V planes into NV21 format (VUVUVU...)**
+        uBuffer.Rewind();
+        vBuffer.Rewind();
+
+        int uvWidth = width / 2;
+        int uvHeight = height / 2;
+        int nv21Index = ySize;
+
+        for (int row = 0; row < uvHeight; row++)
+        {
+            for (int col = 0; col < uvWidth; col++)
+            {
+                int uvIndex = row * uvRowStride + col * uvPixelStride;
+
+                // NV21 is V first, then U (VUVUVU...)
+                nv21[nv21Index++] = (byte)vBuffer.Get(uvIndex);
+                nv21[nv21Index++] = (byte)uBuffer.Get(uvIndex);
+            }
+        }
+
+        // **STEP 3: Create YuvImage with NV21 data**
+        var yuvImage = new global::Android.Graphics.YuvImage(
+            nv21,
+            global::Android.Graphics.ImageFormatType.Nv21,
+            width,
+            height,
+            null // No custom strides
+        );
+
+        // **STEP 4: Compress to JPEG**
+        using var outputStream = new System.IO.MemoryStream();
+
+        bool success = yuvImage.CompressToJpeg(
+            new global::Android.Graphics.Rect(0, 0, width, height),
+            95, // High quality
+            outputStream
+        );
+
+        if (!success)
+        {
+            throw new InvalidOperationException("Failed to compress YUV to JPEG");
+        }
+
+        byte[] jpegBytes = outputStream.ToArray();
+
+        // **STEP 5: Rotate to correct orientation**
+        return RotateJpeg(jpegBytes, GetDeviceRotation());
+    }
+
+    private byte[] RotateJpeg(byte[] jpegBytes, int rotationDegrees)
+    {
+        if (rotationDegrees == 0)
+        {
+            return jpegBytes;
+        }
+
+        try
+        {
+            using var bitmap = BitmapFactory.DecodeByteArray(jpegBytes, 0, jpegBytes.Length);
+            if (bitmap == null)
+            {
+                _logger.Warning("Could not decode JPEG for rotation");
+                return jpegBytes;
+            }
+
+            using var matrix = new global::Android.Graphics.Matrix();
+            matrix.PostRotate(rotationDegrees);
+
+            using var rotatedBitmap = Bitmap.CreateBitmap(
+                bitmap,
+                0, 0,
+                bitmap.Width, bitmap.Height,
+                matrix,
+                true
+            );
+
+            using var outputStream = new System.IO.MemoryStream();
+            rotatedBitmap.Compress(Bitmap.CompressFormat.Jpeg!, 95, outputStream);
+
+            return outputStream.ToArray();
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error rotating JPEG");
+            return jpegBytes;
+        }
+    }
+
+    private int GetDeviceRotation()
+    {
+        try
+        {
+            var windowManager = _ctx.GetSystemService(Context.WindowService) as IWindowManager;
+            var rotation = windowManager?.DefaultDisplay?.Rotation ?? SurfaceOrientation.Rotation0;
+
+            // Convert display rotation to degrees
+            return rotation switch
+            {
+                SurfaceOrientation.Rotation0 => 90,    // Portrait (natural)
+                SurfaceOrientation.Rotation90 => 0,    // Landscape
+                SurfaceOrientation.Rotation180 => 270, // Portrait (upside down)
+                SurfaceOrientation.Rotation270 => 180, // Landscape (upside down)
+                _ => 90
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.Warning(ex, "Could not determine rotation, defaulting to 90°");
+            return 90;
+        }
+    }
+
     private SurfaceOrientation GetDisplayRotation()
     {
         try
@@ -1785,7 +2472,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
     }
 
     // Background rendering
-    private void InitBackgroundRenderer()
+    private void InitializeGLResources()
     {
         const string vsh = @"
 attribute vec4 a_Position;
@@ -2169,6 +2856,7 @@ void main() {
             _logger.Error(ex, "Error processing captured image.");
             shouldReleaseSemaphore = true; // Release on error too
         }
+        // In OnImageAvailable method, after line 2352, in the finally block:
         finally
         {
             // Close image if not already closed
@@ -2187,6 +2875,26 @@ void main() {
             {
                 _capturing = false;
 
+                // **ADD THIS: Cleanup and resume ARCore**
+                try
+                {
+                    CleanupCameraResources();
+
+                    // Small delay to ensure camera is released
+                    await Task.Delay(100);
+
+                    // Resume ARCore session
+                    if (_session != null)
+                    {
+                        _session.Resume();
+                        _logger.Information("ARCore session resumed after capture completion");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Error resuming ARCore after capture");
+                }
+
                 // Release semaphore
                 try
                 {
@@ -2201,72 +2909,136 @@ void main() {
         }
     }
 
-    private void CleanupCameraResources()
+    private bool _requestCapture = false;
+
+    // Modify CaptureHighResPhoto to just set a flag:
+    // Add this field at the top of the class:
+    //private bool _requestCapture = false;
+    private object _captureLock = new object();
+
+    public Task CaptureHighResPhoto()
     {
-        try
+        if (!_cameraTracking)
         {
-            // Close capture session
-            if (_captureSession != null)
+            _logger.Information("Camera tracking not ready");
+            return Task.CompletedTask;
+        }
+
+        if (_currentPose == null)
+        {
+            _logger.Information("AR tracking not ready");
+            return Task.CompletedTask;
+        }
+
+        lock (_captureLock)
+        {
+            if (_capturing)
             {
-                try
-                {
-                    // Causes issues on some devices, so we skip explicit close/dispose
-                    //_captureSession.Close();
-                    //_captureSession.Dispose();
-                }
-                catch (Exception ex)
-                {
-                    _logger.Warning(ex, "Error closing capture session.");
-                }
-                finally
-                {
-                    _captureSession = null;
-                }
+                _logger.Information("Already capturing, ignoring request");
+                return Task.CompletedTask;
             }
 
-            // Close camera device
-            if (_cameraDevice != null)
-            {
-                try
-                {
-                    // Causes issues on some devices, so we skip explicit close/dispose
-                    //_cameraDevice.Close();
-                    //_cameraDevice.Dispose();
-                }
-                catch (Exception ex)
-                {
-                    _logger.Warning(ex, "Error closing camera device.");
-                }
-                finally
-                {
-                    _cameraDevice = null;
-                }
-            }
+            // Set flag to capture on next GL frame
+            _requestCapture = true;
+        }
 
-            // Close image reader
-            if (_imageReader != null)
-            {
-                try
-                {
-                    // Causes issues on some devices, so we skip explicit close/dispose
-                    //_imageReader.Close();
-                    //_imageReader.Dispose();
-                }
-                catch (Exception ex)
-                {
-                    _logger.Warning(ex, "Error closing image reader.");
-                }
-                finally
-                {
-                    _imageReader = null;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.Error(ex, "Error in CleanupCameraResources.");
-        }
+        _logger.Information("Capture requested");
+        return Task.CompletedTask;
     }
+
+    
+
+    //private void CleanupCameraResources()
+    //{
+    //    try
+    //    {
+    //        // Close capture session
+    //        if (_captureSession != null)
+    //        {
+    //            try
+    //            {
+    //                _captureSession.StopRepeating(); // Cancel pending requests
+    //                _captureSession.AbortCaptures(); // Abort in-flight captures
+
+    //                // **ADD: Small delay for MIUI to process abort**
+    //                Thread.Sleep(100);
+    //            }
+    //            catch (Exception ex)
+    //            {
+    //                _logger.Warning(ex, "Error stopping capture session.");
+    //            }
+    //            finally
+    //            {
+    //                _captureSession = null;
+    //            }
+    //        }
+
+    //        // Close camera device
+    //        if (_cameraDevice != null)
+    //        {
+    //            try
+    //            {
+    //                _cameraDevice.Close();
+
+    //                // **ADD: Critical delay for MIUI camera cloud service**
+    //                if (_isMediaTekDevice)
+    //                {
+    //                    Thread.Sleep(300); // MIUI needs time to update cloud camera controller
+    //                    _logger.Information("Applied MIUI camera release delay");
+    //                }
+    //            }
+    //            catch (Exception ex)
+    //            {
+    //                _logger.Warning(ex, "Error closing camera device.");
+    //            }
+    //            finally
+    //            {
+    //                _cameraDevice = null;
+    //            }
+    //        }
+
+    //        // Close image reader
+    //        if (_imageReader != null)
+    //        {
+    //            try
+    //            {
+    //                _imageReader.Close();
+    //            }
+    //            catch (Exception ex)
+    //            {
+    //                _logger.Warning(ex, "Error closing image reader.");
+    //            }
+    //            finally
+    //            {
+    //                _imageReader = null;
+    //            }
+    //        }
+
+    //        // Resume ARCore session after Camera2 cleanup
+    //        try
+    //        {
+    //            if (_session != null)
+    //            {
+    //                // **INCREASE this delay for MIUI**
+    //                if (_isMediaTekDevice)
+    //                {
+    //                    Thread.Sleep(200); // Extra time for MIUI to fully release camera
+    //                }
+
+    //                _session.Resume();
+    //                _logger.Information("ARCore session resumed after camera cleanup");
+    //            }
+    //        }
+    //        catch (Exception ex)
+    //        {
+    //            _logger.Error(ex, "Error resuming ARCore session after cleanup");
+    //        }
+    //    }
+    //    catch (Exception ex)
+    //    {
+    //        _logger.Error(ex, "Error in CleanupCameraResources.");
+    //    }
+    //}
 
     private void LogMemoryUsage()
     {

@@ -1,7 +1,8 @@
-using Android.App;
+﻿using Android.App;
 using Android.Content;
 using Android.Content.PM;
 using Android.OS;
+using Google.AR.Core;
 
 namespace ARGuidanceMAUI.Platforms.Android
 {
@@ -10,9 +11,22 @@ namespace ARGuidanceMAUI.Platforms.Android
         ConfigChanges.ScreenLayout | ConfigChanges.SmallestScreenSize | ConfigChanges.Density)]
     public class MainActivity : MauiAppCompatActivity
     {
+        private static bool _isMediaTekDevice = false;
+        private static bool _isCameraInUse = false;
+
         protected override void OnCreate(Bundle? savedInstanceState)
         {
             base.OnCreate(savedInstanceState);
+
+            // Detect MediaTek devices
+            _isMediaTekDevice = IsMediaTekDevice();
+            if (_isMediaTekDevice)
+            {
+                System.Diagnostics.Debug.WriteLine("⚠️ MediaTek device detected - applying camera workarounds");
+            }
+
+            // Check ARCore availability BEFORE any camera operations
+            CheckArCoreAvailability();
 
             // Reduce screen brightness to minimize heat generation
             var layoutParams = Window?.Attributes;
@@ -28,14 +42,84 @@ namespace ARGuidanceMAUI.Platforms.Android
             // Request battery optimization exemption
             RequestBatteryOptimizationExemption();
 
-            // Request MIUI-specific permissions
-            //RequestMIUIPermissions();
-
             StartForegroundService();
+        }
+
+        private bool IsMediaTekDevice()
+        {
+            try
+            {
+                var hardware = Build.Hardware?.ToLower() ?? "";
+                var board = Build.Board?.ToLower() ?? "";
+                var soc = Build.SocManufacturer?.ToLower() ?? "";
+
+                return hardware.Contains("mt") ||
+                       hardware.Contains("mediatek") ||
+                       board.Contains("mt") ||
+                       soc.Contains("mt") ||
+                       soc.Contains("mediatek");
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void CheckArCoreAvailability()
+        {
+            try
+            {
+                var availability = ArCoreApk.Instance.CheckAvailability(this);
+
+                if (availability.IsTransient)
+                {
+                    System.Diagnostics.Debug.WriteLine("ARCore availability is transient, waiting...");
+                    // Wait and check again
+                    new Handler(Looper.MainLooper!).PostDelayed(() =>
+                    {
+                        CheckArCoreAvailability();
+                    }, 200);
+                    return;
+                }
+
+                if (availability != ArCoreApk.Availability.SupportedInstalled)
+                {
+                    System.Diagnostics.Debug.WriteLine($"ARCore not available: {availability}");
+
+                    // Show error to user
+                    RunOnUiThread(() =>
+                    {
+                        var builder = new AlertDialog.Builder(this);
+                        builder.SetTitle("ARCore Required");
+                        builder.SetMessage($"This app requires ARCore, but it's not available on this device.\nStatus: {availability}");
+                        builder.SetPositiveButton("OK", (s, e) => Finish());
+                        builder.Show();
+                    });
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine("✓ ARCore is available and installed");
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error checking ARCore: {ex.Message}");
+            }
         }
 
         protected override void OnPause()
         {
+            System.Diagnostics.Debug.WriteLine("MainActivity.OnPause");
+
+            // Mark camera as not in use
+            _isCameraInUse = false;
+
+            // For MediaTek devices, give extra time for camera to release
+            if (_isMediaTekDevice)
+            {
+                System.Threading.Thread.Sleep(150); // Small delay to help camera release
+            }
+
             base.OnPause();
 
             // Allow screen to turn off when app is paused to save battery/reduce heat
@@ -44,10 +128,41 @@ namespace ARGuidanceMAUI.Platforms.Android
 
         protected override void OnResume()
         {
+            System.Diagnostics.Debug.WriteLine("MainActivity.OnResume");
+
             base.OnResume();
 
             // Re-enable when app resumes
             Window?.AddFlags(global::Android.Views.WindowManagerFlags.KeepScreenOn);
+
+            // For MediaTek devices, delay camera initialization
+            if (_isMediaTekDevice)
+            {
+                new Handler(Looper.MainLooper!).PostDelayed(() =>
+                {
+                    _isCameraInUse = true;
+                    System.Diagnostics.Debug.WriteLine("Camera ready for use");
+                }, 300); // Delay camera access
+            }
+            else
+            {
+                _isCameraInUse = true;
+            }
+        }
+
+        protected override void OnStop()
+        {
+            System.Diagnostics.Debug.WriteLine("MainActivity.OnStop");
+
+            // Ensure camera is released before stopping
+            _isCameraInUse = false;
+
+            if (_isMediaTekDevice)
+            {
+                System.Threading.Thread.Sleep(200); // Extra time for cleanup
+            }
+
+            base.OnStop();
         }
 
         private void RequestMIUIPermissions()
@@ -142,6 +257,10 @@ namespace ARGuidanceMAUI.Platforms.Android
 
         protected override void OnDestroy()
         {
+            System.Diagnostics.Debug.WriteLine("MainActivity.OnDestroy");
+
+            _isCameraInUse = false;
+
             try
             {
                 var serviceIntent = new Intent(this, typeof(ArCaptureService));
@@ -149,8 +268,18 @@ namespace ARGuidanceMAUI.Platforms.Android
             }
             catch { }
 
+            // Extra cleanup time for MediaTek
+            if (_isMediaTekDevice)
+            {
+                System.Threading.Thread.Sleep(250);
+            }
+
             base.OnDestroy();
         }
+
+        // Static helper methods for ARCore service
+        public static bool IsMediaTekHardware() => _isMediaTekDevice;
+        public static bool IsCameraReady() => _isCameraInUse;
     }
 
     [Service(ForegroundServiceType = ForegroundService.TypeCamera)]
@@ -173,7 +302,6 @@ namespace ARGuidanceMAUI.Platforms.Android
                 .Build();
 
             StartForeground(NotificationId, notification);
-
             return StartCommandResult.Sticky;
         }
 
@@ -181,15 +309,23 @@ namespace ARGuidanceMAUI.Platforms.Android
         {
             if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
             {
-                var channel = new NotificationChannel(ChannelId, "AR Capture Service",
+                var channel = new NotificationChannel(
+                    ChannelId,
+                    "AR Capture Service",
                     NotificationImportance.Low)
                 {
-                    Description = "Keeps AR capture running in the foreground"
+                    Description = "Keeps AR capture service running"
                 };
 
                 var notificationManager = GetSystemService(NotificationService) as NotificationManager;
                 notificationManager?.CreateNotificationChannel(channel);
             }
+        }
+
+        public override void OnDestroy()
+        {
+            StopForeground(StopForegroundFlags.Remove);
+            base.OnDestroy();
         }
     }
 }
