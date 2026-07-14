@@ -88,6 +88,10 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
     // Logger
     private readonly Serilog.ILogger _logger;
 
+    // AR Camera or Camera2 API usage
+    // Note: Camera2 API causes overheating on Redmi Note 13 Pro, so we use ARCore's camera for now.
+    private bool _ARCamera = true;
+
     public ArCoreService()
     {
         _ctx = global::Android.App.Application.Context!;
@@ -1361,18 +1365,33 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             var cameraConfigList = _session.GetSupportedCameraConfigs(filter);
             if (cameraConfigList != null && cameraConfigList.Count > 0)
             {
-                // Select the lowest resolution camera config for better performance
-                var lowestResConfig = cameraConfigList
-                    .OrderBy(c => c.ImageSize.Width * c.ImageSize.Height)
-                    .First();
+                if (_ARCamera)
+                {
+                    // Select the highest resolution camera config for better image quality
+                    var highestResConfig = cameraConfigList
+                        .OrderBy(c => c.ImageSize.Width * c.ImageSize.Height)
+                        .Last();
+                    _session.CameraConfig = highestResConfig;
+                    _logger.Information("ARCore camera config: {Width}x{Height} @ {Fps}fps",
+                        highestResConfig.ImageSize.Width,
+                        highestResConfig.ImageSize.Height,
+                        highestResConfig.FpsRange);                    
+                }
+                else
+                {
+                    // Select the lowest resolution camera config for better performance
+                    var lowestResConfig = cameraConfigList
+                        .OrderBy(c => c.ImageSize.Width * c.ImageSize.Height)
+                        .First();
 
-                // Set camera config on the SESSION, not the Config object
-                _session.CameraConfig = lowestResConfig;
+                    // Set camera config on the SESSION, not the Config object
+                    _session.CameraConfig = lowestResConfig;
 
-                _logger.Information("ARCore camera config: {Width}x{Height} @ {Fps}fps",
-                    lowestResConfig.ImageSize.Width,
-                    lowestResConfig.ImageSize.Height,
-                    lowestResConfig.FpsRange);
+                    _logger.Information("ARCore camera config: {Width}x{Height} @ {Fps}fps",
+                        lowestResConfig.ImageSize.Width,
+                        lowestResConfig.ImageSize.Height,
+                        lowestResConfig.FpsRange);
+                }
             }
 
             _logger.Information("ARCore session configured for performance");
@@ -1420,6 +1439,12 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
     public async void RequestCapture()
     {
+        if (_ARCamera)
+        {
+            await CaptureHighResPhotoAsync();
+            return;
+        }
+
         // Block captures if thermal state is Critical or worse
         if (_currentThermalStatus >= 4)
         {
@@ -1587,6 +1612,38 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         }
     }
 
+    private bool _requestCapture = false;
+    private object _captureLock = new object();
+
+    public Task CaptureHighResPhotoAsync()
+    {
+        if (!_cameraTracking)
+        {
+            _logger.Information("Camera tracking not ready");
+            return Task.CompletedTask;
+        }
+
+        if (_currentPose == null)
+        {
+            _logger.Information("AR tracking not ready");
+            return Task.CompletedTask;
+        }
+
+        lock (_captureLock)
+        {
+            if (_capturing)
+            {
+                _logger.Information("Already capturing, ignoring request");
+                return Task.CompletedTask;
+            }
+
+            _requestCapture = true;
+        }
+
+        _logger.Information("Capture requested");
+        return Task.CompletedTask;
+    }
+
     private (int width, int height) GetOptimalCaptureSize()
     {
         // Default based on detected capabilities
@@ -1604,6 +1661,269 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             >= 5 => (960, 540),                   // Emergency+: reduce to low resolution
             _ => (_cameraWidth, _cameraHeight)
         };
+    }
+
+    private async Task CaptureFromArFrameAsync(ArFrame frame)
+    {
+        Image? arImage = null;
+        byte[]? jpegBytes = null;
+
+        try
+        {
+            _logger.Information("Acquiring ARCore camera image...");
+
+            // Acquire image
+            arImage = frame.AcquireCameraImage();
+            if (arImage == null)
+            {
+                _logger.Warning("Could not acquire camera image from ARCore");
+                return;
+            }
+
+            _logger.Information("Converting YUV to JPEG ({Width}x{Height})...", arImage.Width, arImage.Height);
+
+            jpegBytes = ConvertYuvToJpeg(arImage);
+
+            _logger.Information("Captured ARCore image: {Size} bytes", jpegBytes.Length);
+        }
+        catch (NotSupportedException ex)
+        {
+            _logger.Warning(ex, "Image format not supported");
+            return;
+        }
+        catch (ResourceExhaustedException ex)
+        {
+            _logger.Warning(ex, "ARCore image buffer pool exhausted - capture too fast");
+            return;
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error acquiring/converting ARCore image");
+            return;
+        }
+        finally
+        {
+            if (arImage != null)
+            {
+                try
+                {
+                    arImage.Close();
+                    arImage.Dispose();
+                    _logger.Information("ARCore image released");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warning(ex, "Error disposing ARCore image");
+                }
+            }
+        }
+
+        if (jpegBytes != null && CaptureReady != null)
+        {
+            var package = new CapturePackage
+            {
+                JpegBytes = jpegBytes,
+                MetadataJson = "",
+                FileBaseName = $"cap_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}"
+            };
+
+            try
+            {
+                await Task.WhenAll(
+                    CaptureReady.GetInvocationList()
+                        .Cast<Func<CapturePackage, Task>>()
+                        .Select(handler => handler(package))
+                );
+
+                _logger.Information("Image save completed successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error in CaptureReady handler");
+            }
+        }
+
+        // Update poses
+        if (_poses.Count > 100)
+        {
+            _poses.RemoveAt(0);
+            _yaws.RemoveAt(0);
+        }
+
+        if (_currentPose != null)
+        {
+            _poses.Add(_currentPose);
+            _yaws.Add(_currentYaw);
+        }
+
+        _captures++;
+
+        LogMemoryUsage();
+        LogBatteryAndThermalInfo();
+    }
+
+    private byte[] ConvertYuvToJpeg(Image arImage)
+    {
+        int width = arImage.Width;
+        int height = arImage.Height;
+
+        var planes = arImage.GetPlanes();
+        if (planes == null || planes.Length < 3)
+        {
+            throw new NotSupportedException("ARCore image does not have required planes");
+        }
+
+        // Get all three planes
+        var yPlane = planes[0];
+        var uPlane = planes[1];
+        var vPlane = planes[2];
+
+        var yBuffer = yPlane.Buffer;
+        var uBuffer = uPlane.Buffer;
+        var vBuffer = vPlane.Buffer;
+
+        if (yBuffer == null || uBuffer == null || vBuffer == null)
+        {
+            throw new NotSupportedException("One or more plane buffers are null");
+        }
+
+        // Get plane properties
+        int yRowStride = yPlane.RowStride;
+        int uvRowStride = uPlane.RowStride;
+        int uvPixelStride = uPlane.PixelStride;
+
+        // NV21 format: YYYYYYYY VUVUVU (Y plane + interleaved VU)
+        int ySize = width * height;
+        int uvSize = width * height / 2;
+        byte[] nv21 = new byte[ySize + uvSize];
+
+        // STEP 1: Copy Y plane
+        yBuffer.Rewind();
+        if (yRowStride == width)
+        {
+            // No padding - direct copy
+            yBuffer.Get(nv21, 0, ySize);
+        }
+        else
+        {
+            // Has padding - copy row by row
+            for (int row = 0; row < height; row++)
+            {
+                yBuffer.Position(row * yRowStride);
+                yBuffer.Get(nv21, row * width, width);
+            }
+        }
+
+        // STEP 2: Interleave U and V planes into NV21 format (VUVUVU...)
+        uBuffer.Rewind();
+        vBuffer.Rewind();
+
+        int uvWidth = width / 2;
+        int uvHeight = height / 2;
+        int nv21Index = ySize;
+
+        for (int row = 0; row < uvHeight; row++)
+        {
+            for (int col = 0; col < uvWidth; col++)
+            {
+                int uvIndex = row * uvRowStride + col * uvPixelStride;
+
+                // NV21 is V first, then U (VUVUVU...)
+                nv21[nv21Index++] = (byte)vBuffer.Get(uvIndex);
+                nv21[nv21Index++] = (byte)uBuffer.Get(uvIndex);
+            }
+        }
+
+        // STEP 3: Create YuvImage with NV21 data
+        var yuvImage = new global::Android.Graphics.YuvImage(
+            nv21,
+            global::Android.Graphics.ImageFormatType.Nv21,
+            width,
+            height,
+            null // No custom strides
+        );
+
+        // STEP 4: Compress to JPEG
+        using var outputStream = new System.IO.MemoryStream();
+
+        bool success = yuvImage.CompressToJpeg(
+            new global::Android.Graphics.Rect(0, 0, width, height),
+            95, // High quality
+            outputStream
+        );
+
+        if (!success)
+        {
+            throw new InvalidOperationException("Failed to compress YUV to JPEG");
+        }
+
+        byte[] jpegBytes = outputStream.ToArray();
+
+        // STEP 5: Rotate to correct orientation
+        return RotateJpeg(jpegBytes, GetDeviceRotation());
+    }
+
+    private byte[] RotateJpeg(byte[] jpegBytes, int rotationDegrees)
+    {
+        if (rotationDegrees == 0)
+        {
+            return jpegBytes;
+        }
+
+        try
+        {
+            using var bitmap = BitmapFactory.DecodeByteArray(jpegBytes, 0, jpegBytes.Length);
+            if (bitmap == null)
+            {
+                _logger.Warning("Could not decode JPEG for rotation");
+                return jpegBytes;
+            }
+
+            using var matrix = new global::Android.Graphics.Matrix();
+            matrix.PostRotate(rotationDegrees);
+
+            using var rotatedBitmap = Bitmap.CreateBitmap(
+                bitmap,
+                0, 0,
+                bitmap.Width, bitmap.Height,
+                matrix,
+                true
+            );
+
+            using var outputStream = new System.IO.MemoryStream();
+            rotatedBitmap.Compress(Bitmap.CompressFormat.Jpeg!, 95, outputStream);
+
+            return outputStream.ToArray();
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error rotating JPEG");
+            return jpegBytes;
+        }
+    }
+
+    private int GetDeviceRotation()
+    {
+        try
+        {
+            var windowManager = _ctx.GetSystemService(Context.WindowService) as IWindowManager;
+            var rotation = windowManager?.DefaultDisplay?.Rotation ?? SurfaceOrientation.Rotation0;
+
+            // Convert display rotation to degrees
+            return rotation switch
+            {
+                SurfaceOrientation.Rotation0 => 90,    // Portrait (natural)
+                SurfaceOrientation.Rotation90 => 0,    // Landscape
+                SurfaceOrientation.Rotation180 => 270, // Portrait (upside down)
+                SurfaceOrientation.Rotation270 => 180, // Landscape (upside down)
+                _ => 90
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.Warning(ex, "Could not determine rotation, defaulting to 90°");
+            return 90;
+        }
     }
 
     // GLSurfaceView.IRenderer
@@ -1649,15 +1969,14 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 return;
             }
 
+            // Skip if already capturing
             if (_capturing)
             {
-                // Reduce ARCore updates during capture to save CPU
-                Thread.Sleep(50); // Throttle to ~20 FPS during capture
-                GuidanceUpdated?.Invoke(new GuidanceState { Hint = "Capturing..." });
+                Thread.Sleep(50);
+                GuidanceUpdated?.Invoke(new GuidanceState { Hint = "Processing capture..." });
                 return;
             }
 
-            // Add SessionPausedException handling
             ArFrame frame;
             try
             {
@@ -1665,7 +1984,6 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             }
             catch (SessionPausedException)
             {
-                // Session not ready yet, skip this frame
                 return;
             }
             catch (Java.Lang.IllegalStateException ex)
@@ -1676,6 +1994,43 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
 
             var cam = frame.Camera;
             _currentPose = cam.Pose;
+
+            if (_ARCamera)
+            {
+                bool shouldCapture = false;
+                lock (_captureLock)
+                {
+                    if (_requestCapture && !_capturing)
+                    {
+                        _requestCapture = false;
+                        _capturing = true;
+                        shouldCapture = true;
+                    }
+                }
+
+                if (shouldCapture)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await CaptureFromArFrameAsync(frame);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Error(ex, "Error in capture task");
+                        }
+                        finally
+                        {
+                            lock (_captureLock)
+                            {
+                                _capturing = false;
+                            }
+                        }
+                    });
+                }
+            }
+
 
             // Background
             UpdateBackgroundUv(frame);

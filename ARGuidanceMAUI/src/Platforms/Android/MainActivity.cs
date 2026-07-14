@@ -25,8 +25,9 @@ namespace ARGuidanceMAUI.Platforms.Android
             // Keep screen on only during active use (not when app is in background)
             Window?.AddFlags(global::Android.Views.WindowManagerFlags.KeepScreenOn);
 
+            // Causes overheating on some devices, so we will not request this for now
             // Request battery optimization exemption
-            RequestBatteryOptimizationExemption();
+            //RequestBatteryOptimizationExemption();
 
             // Request MIUI-specific permissions
             //RequestMIUIPermissions();
