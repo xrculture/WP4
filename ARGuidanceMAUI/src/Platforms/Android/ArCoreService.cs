@@ -486,6 +486,8 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             }
         }
 
+        actions.Add("Delete Project");
+
         var action = await Application.Current.MainPage.DisplayActionSheetAsync(
             $"Name: {project.Name}",
             "Cancel",
@@ -516,6 +518,19 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         else if (action == "Check Status")
         {
             await CheckModelStatusAsync(project);
+        }
+        else if (action == "Delete Project")
+        {
+            var confirm = await Application.Current.MainPage.DisplayAlertAsync(
+                "Delete Project",
+                $"Are you sure you want to delete project '{project.Name}'?",
+                "Yes",
+                "No"
+            );
+            if (confirm)
+            {
+                await DeleteProjectAsync(project);
+            }
         }
     }
 
@@ -775,7 +790,7 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             {
                 if (Application.Current?.MainPage != null)
                 {
-                    await Application.Current.MainPage.DisplayAlert(title, message, "OK");
+                    await Application.Current.MainPage.DisplayAlertAsync(title, message, "OK");
                 }
                 else
                 {
@@ -788,6 +803,116 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 System.Diagnostics.Debug.WriteLine($"{title}: {message}");
             }
         });
+    }
+
+    private async Task DeleteProjectAsync(ProjectInfo project)
+    {
+        try
+        {
+            var context = global::Android.App.Application.Context;
+            if (context?.ContentResolver == null)
+            {
+                _logger.Error("Content resolver not available.");
+                return;
+            }
+
+            int totalDeleted = 0;
+
+            // Delete project.xml
+            var existingUri = await FindProjectXmlUriAsync(project.FolderPath);
+            if (existingUri != null)
+            {
+                _logger.Information("Found project.xml URI: {Uri} for path: {Path}", existingUri, project.FolderPath);
+
+                try
+                {
+                    int deleted = context.ContentResolver.Delete(existingUri, null, null);
+                    totalDeleted += deleted;
+
+                    if (deleted > 0)
+                    {
+                        _logger.Information("Successfully deleted project.xml: {FolderPath} (deleted count: {Count})", project.FolderPath, deleted);
+                    }
+                    else
+                    {
+                        _logger.Warning("Delete returned 0 for project.xml: {FolderPath}, URI: {Uri}", project.FolderPath, existingUri);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Exception when deleting project.xml at URI: {Uri}", existingUri);
+                }
+            }
+            else
+            {
+                _logger.Warning("Project XML URI not found for: {FolderPath}", project.FolderPath);
+            }
+
+            // Delete associated images in Pictures folder
+            var imageFolderPath = project.FolderPath.Replace("Documents/", "Pictures/");
+            var projection = new[] { global::Android.Provider.BaseColumns.Id };
+            var selection = $"{MediaStore.MediaColumns.RelativePath} LIKE ?";
+            var selectionArgs = new[] { $"{imageFolderPath}%" };
+
+            _logger.Information("Searching for images in: {ImagePath}", imageFolderPath);
+
+            using var cursor = context.ContentResolver.Query(
+                MediaStore.Images.Media.ExternalContentUri,
+                projection,
+                selection,
+                selectionArgs,
+                null
+            );
+
+            int imageCount = 0;
+            if (cursor != null && cursor.MoveToFirst())
+            {
+                var idColumn = cursor.GetColumnIndex(global::Android.Provider.BaseColumns.Id);
+                do
+                {
+                    var id = cursor.GetLong(idColumn);
+                    var uri = global::Android.Net.Uri.WithAppendedPath(
+                        MediaStore.Images.Media.ExternalContentUri,
+                        id.ToString()
+                    );
+
+                    try
+                    {
+                        int deleted = context.ContentResolver.Delete(uri, null, null);
+                        if (deleted > 0)
+                        {
+                            imageCount++;
+                            totalDeleted += deleted;
+                        }
+                        else
+                        {
+                            _logger.Warning("Failed to delete image with ID: {Id}", id);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Exception deleting image with ID: {Id}", id);
+                    }
+                }
+                while (cursor.MoveToNext());
+            }
+
+            _logger.Information("Deleted {ImageCount} project images in: {ImageFolderPath}", imageCount, imageFolderPath);
+
+            if (totalDeleted > 0)
+            {
+                await ShowMessageAsync("Delete Project", $"Project '{project.Name}' deleted.\nRemoved: 1 project file + {imageCount} images.");
+            }
+            else
+            {
+                await ShowMessageAsync("Delete Project", $"Project '{project.Name}' - No files were deleted. Check logs for details.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error deleting project.");
+            await ShowMessageAsync("Delete Error", $"Failed to delete project: {ex.Message}");
+        }
     }
 
     public async Task<HttpResponseMessage?> RetryPostAsync(HttpClient client, string url, HttpContent content, int maxRetries = 3)
@@ -1114,43 +1239,43 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
     }
 
     private async Task<global::Android.Net.Uri?> FindProjectXmlUriAsync(string relativePath)
+{
+    try
     {
-        try
-        {
-            var context = global::Android.App.Application.Context;
-            if (context?.ContentResolver == null) return null;
+        var context = global::Android.App.Application.Context;
+        if (context?.ContentResolver == null) return null;
 
             var projection = new[] { global::Android.Provider.BaseColumns.Id };
             var selection = $"{MediaStore.MediaColumns.DisplayName} = ? AND {MediaStore.MediaColumns.RelativePath} = ?";
-            var selectionArgs = new[] { "project.xml", relativePath };
+        var selectionArgs = new[] { "project.xml", relativePath };
 
-            using var cursor = context.ContentResolver.Query(
-                MediaStore.Files.GetContentUri("external"),
-                projection,
-                selection,
-                selectionArgs,
-                null
-            );
+        using var cursor = context.ContentResolver.Query(
+            MediaStore.Files.GetContentUri("external"),
+            projection,
+            selection,
+            selectionArgs,
+            null
+        );
 
-            if (cursor != null && cursor.MoveToFirst())
-            {
-                var idColumn = cursor.GetColumnIndex(global::Android.Provider.BaseColumns.Id);
-                var id = cursor.GetLong(idColumn);
-                return global::Android.Net.Uri.WithAppendedPath(
-                    MediaStore.Files.GetContentUri("external"),
-                    id.ToString()
-                );
-            }
-
-            _logger.Information("No existing project XML found at: {RelativePath}", relativePath);
-            return null;
-        }
-        catch (Exception ex)
+        if (cursor != null && cursor.MoveToFirst())
         {
-            _logger.Error(ex, "Error finding project XML URI.");
-            return null;
+            var idColumn = cursor.GetColumnIndex(global::Android.Provider.BaseColumns.Id);
+            var id = cursor.GetLong(idColumn);
+            return global::Android.Net.Uri.WithAppendedPath(
+                MediaStore.Files.GetContentUri("external"),
+                id.ToString()
+            );
         }
+
+        _logger.Information("No existing project XML found at: {RelativePath}", relativePath);
+        return null;
     }
+    catch (Exception ex)
+    {
+        _logger.Error(ex, "Error finding project XML URI.");
+        return null;
+    }
+}
 
     private async Task<ProjectInfo?> ShowProjectDialogAsync()
     {

@@ -14,13 +14,13 @@ namespace ARGuidanceMAUI.Platforms.Android
         {
             base.OnCreate(savedInstanceState);
 
-            // Reduce screen brightness to minimize heat generation
-            var layoutParams = Window?.Attributes;
-            if (layoutParams != null)
-            {
-                layoutParams.ScreenBrightness = 0.4f; // 40% brightness (range: 0.0 to 1.0)
-                Window?.Attributes = layoutParams;
-            }
+            // Redmi Note: Reduce screen brightness to minimize heat generation
+            //var layoutParams = Window?.Attributes;
+            //if (layoutParams != null)
+            //{
+            //    layoutParams.ScreenBrightness = 0.4f; // 40% brightness (range: 0.0 to 1.0)
+            //    Window?.Attributes = layoutParams;
+            //}
 
             // Keep screen on only during active use (not when app is in background)
             Window?.AddFlags(global::Android.Views.WindowManagerFlags.KeepScreenOn);
