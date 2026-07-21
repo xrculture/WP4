@@ -1350,10 +1350,10 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
             var config = new Config(_session);
             config.SetUpdateMode(Config.UpdateMode.LatestCameraImage);
             config.SetFocusMode(Config.FocusMode.Auto);
-            config.SetPlaneFindingMode(Config.PlaneFindingMode.Disabled);
-            config.SetLightEstimationMode(Config.LightEstimationMode.Disabled);
-            config.SetDepthMode(Config.DepthMode.Disabled);
-
+            config.SetPlaneFindingMode(Config.PlaneFindingMode.HorizontalAndVertical); // Improves Feature detection
+            config.SetLightEstimationMode(Config.LightEstimationMode.AmbientIntensity); // Improves Image quality
+            config.SetDepthMode(Config.DepthMode.Automatic); // Improves Both (if device supports depth)
+            
             // Apply basic config first
             _session.Configure(config);
 
