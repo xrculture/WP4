@@ -70,13 +70,19 @@ public class ArCapturePage : ContentPage
             InputTransparent = true
         };
 
-        var capture = new Button { 
-            Text = "📷",
-            FontAutoScalingEnabled = false
+        var capture = new ImageButton
+        {
+            Source = "camera.png",
+            WidthRequest = 80,
+            HeightRequest = 80,
+            CornerRadius = 40,
+            BackgroundColor = Colors.Transparent,
+            Aspect = Aspect.Center
         };
         capture.Clicked += (_, __) => _ar.RequestCapture();
 
-        var options = new Button { 
+        var options = new Button
+        {
             Text = "☰",
             FontAutoScalingEnabled = false
         };
@@ -131,20 +137,19 @@ _ar.CaptureReady += async (pkg) =>
             }
         };
 
-        // Button row at the bottom
-        var buttonRow = new StackLayout
-        {
-            Orientation = StackOrientation.Horizontal,
-            Spacing = 12,
-            Children = { options, capture }
-        };
+        // Options button at top-right
+        options.HorizontalOptions = LayoutOptions.End;
+        options.VerticalOptions = LayoutOptions.Start;
+        options.Margin = new Thickness(12);
+        overlay.Children.Add(options);
+        Grid.SetRow(options, 0);
 
-        overlay.Children.Add(buttonRow);
-        Grid.SetRow(buttonRow, 2);
-
-        options.HorizontalOptions = LayoutOptions.Start;
-        capture.HorizontalOptions = LayoutOptions.End;
-        buttonRow.Margin = new Thickness(12);
+        // Capture button at bottom-center
+        capture.HorizontalOptions = LayoutOptions.Center;
+        capture.VerticalOptions = LayoutOptions.End;
+        capture.Margin = new Thickness(12);
+        overlay.Children.Add(capture);
+        Grid.SetRow(capture, 2);
 
         Content = new Grid
         {
@@ -290,7 +295,7 @@ _ar.CaptureReady += async (pkg) =>
         {
             _hud.Update(t);
             _hudGraphicsView.Invalidate();
-            
+
             _featurePointsDrawable.Update(t);
             _featurePointsGraphicsView.Invalidate();
         });
