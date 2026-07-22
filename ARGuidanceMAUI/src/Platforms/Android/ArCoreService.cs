@@ -1364,6 +1364,8 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         _ = StartAsync();
     }
 
+    private bool _sessionNeedsResume = false;
+
     private async Task StartAsync()
     {
         try
@@ -1441,23 +1443,30 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
                 }
 
                 CreateSession();
-
                 StartBackgroundThread();
+
+                // Wait for OnSurfaceChanged to be called with valid dimensions
+                _sessionNeedsResume = true;
+                _logger.Information("Session created. Waiting for valid surface dimensions before resuming...");
             }
-
-            try
+            else
             {
-                _session?.Resume();
-                _glView?.OnResume();
+                _logger.Information("AR session already exists. Resuming...");
 
-                if (_session != null && _cameraTextureId != 0)
-                    _session.SetCameraTextureName(_cameraTextureId);
+                try
+                {
+                    _session?.Resume();
+                    _glView?.OnResume();
 
-                _logger.Information("AR session resumed successfully.");
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "Error resuming AR session.");
+                    if (_session != null && _cameraTextureId != 0)
+                        _session.SetCameraTextureName(_cameraTextureId);
+
+                    _logger.Information("AR session resumed successfully.");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Error resuming AR session.");
+                }
             }
         }
         catch (Exception e)
@@ -2066,19 +2075,43 @@ public class ArCoreService : Java.Lang.Object, IArPlatformService, GLSurfaceView
         {
             GLES20.GlViewport(0, 0, width, height);
 
-            if ((_session != null) && (width > 0) && (height > 0) && (_surfaceWidth != width) && (_surfaceHeight != height))
+            if (width > 0 && height > 0)
             {
                 _surfaceWidth = width;
                 _surfaceHeight = height;
-                _session.SetDisplayGeometry((int)GetDisplayRotation(), width, height);
-                _logger.Information("Surface changed: width={Width}, height={Height}, rotation={Rotation}", width, height, GetDisplayRotation());
+
+                if (_session != null)
+                {
+                    _session.SetDisplayGeometry((int)GetDisplayRotation(), width, height);
+                    _logger.Information("Surface changed: width={Width}, height={Height}, rotation={Rotation}",
+                        width, height, GetDisplayRotation());
+
+                    // Resume session now that we have valid dimensions
+                    if (_sessionNeedsResume)
+                    {
+                        try
+                        {
+                            _session.Resume();
+                            _glView?.OnResume();
+
+                            if (_cameraTextureId != 0)
+                                _session.SetCameraTextureName(_cameraTextureId);
+
+                            _sessionNeedsResume = false;
+                            _logger.Information("AR session resumed after surface ready.");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Error(ex, "Error resuming AR session after surface ready.");
+                        }
+                    }
+                }
             }
         }
         catch (Exception ex)
         {
             _logger.Error(ex, "Error in OnSurfaceChanged.");
         }
-
     }
 
     public void OnDrawFrame(IGL10? gl)
