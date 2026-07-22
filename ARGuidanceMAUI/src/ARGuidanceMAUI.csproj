@@ -29,17 +29,17 @@
 		<TargetSdkVersion>34</TargetSdkVersion>
 	</PropertyGroup>
 	<PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Debug|net10.0-android|AnyCPU'">
-		<ApplicationDisplayVersion>1.6</ApplicationDisplayVersion>
+		<ApplicationDisplayVersion>1.7</ApplicationDisplayVersion>
 		<EmbedAssembliesIntoApk>True</EmbedAssembliesIntoApk>
 	</PropertyGroup>
 	<PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Debug|net10.0-ios|AnyCPU'">
-		<ApplicationDisplayVersion>1.6</ApplicationDisplayVersion>
+		<ApplicationDisplayVersion>1.7</ApplicationDisplayVersion>
 	</PropertyGroup>
 	<PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Release|net10.0-android|AnyCPU'">
-		<ApplicationDisplayVersion>1.6</ApplicationDisplayVersion>
+		<ApplicationDisplayVersion>1.7</ApplicationDisplayVersion>
 	</PropertyGroup>
 	<PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Release|net10.0-ios|AnyCPU'">
-		<ApplicationDisplayVersion>1.6</ApplicationDisplayVersion>
+		<ApplicationDisplayVersion>1.7</ApplicationDisplayVersion>
 	</PropertyGroup>
 	<ItemGroup>
 		<MauiAsset Include="Resources\**" />
